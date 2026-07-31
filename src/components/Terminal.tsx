@@ -6,6 +6,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import { useAppStore } from '../store/useAppStore';
+import { useAIStore } from '../store/useAIStore';
 import 'xterm/css/xterm.css';
 
 interface TerminalProps {
@@ -22,6 +23,10 @@ export default function Terminal({ connectionId, connectionName }: TerminalProps
   const unlistenRef = useRef<UnlistenFn | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>('connecting');
   const [errorMessage, setErrorMessage] = useState<string>('');
+  const [selectedText, setSelectedText] = useState('');
+  const [selectionPos, setSelectionPos] = useState({ x: 0, y: 0 });
+
+  const addTerminalOutput = useAIStore((s) => s.addTerminalOutput);
 
   const tabId = useAppStore((s) => {
     const tab = s.tabs.find(
@@ -74,6 +79,22 @@ export default function Terminal({ connectionId, connectionName }: TerminalProps
         // fit may fail if container has zero dimensions
       }
     });
+
+    // Selection handler for AI integration
+    const onSelectionChange = () => {
+      const text = term.getSelection();
+      if (text) {
+        const viewport = terminalRef.current?.querySelector('.xterm-viewport');
+        if (viewport) {
+          const rect = viewport.getBoundingClientRect();
+          setSelectionPos({ x: rect.right - 40, y: rect.top + 10 });
+        }
+        setSelectedText(text);
+      } else {
+        setSelectedText('');
+      }
+    };
+    term.onSelectionChange(onSelectionChange);
 
     let sessionId: string | null = null;
     let cancelled = false;
@@ -130,6 +151,33 @@ export default function Terminal({ connectionId, connectionName }: TerminalProps
       }
     });
 
+    // Intercept Ctrl+C / Ctrl+V at xterm level (xterm captures keys before DOM)
+    const onKeyDisposable = term.onKey((ev) => {
+      const { key, domEvent } = ev;
+      if (domEvent.ctrlKey && !domEvent.altKey && !domEvent.shiftKey) {
+        if (key === '\x03') {
+          // Ctrl+C: copy selection if exists, else send to terminal
+          const selection = term.getSelection();
+          if (selection) {
+            domEvent.preventDefault();
+            navigator.clipboard.writeText(selection).catch(() => {});
+            return;
+          }
+          // No selection: let it pass through as SIGINT
+        }
+        if (key === '\x16') {
+          // Ctrl+V: paste
+          domEvent.preventDefault();
+          navigator.clipboard.readText().then((text) => {
+            if (sessionId) {
+              invoke('ssh_write', { sessionId, data: text }).catch(() => {});
+            }
+          }).catch(() => {});
+          return;
+        }
+      }
+    });
+
     // ResizeObserver for terminal container
     const resizeObserver = new ResizeObserver(() => {
       if (!cancelled) {
@@ -152,7 +200,7 @@ export default function Terminal({ connectionId, connectionName }: TerminalProps
 
     resizeObserver.observe(terminalRef.current);
 
-    // Copy/Paste keyboard shortcuts
+    // Copy/Paste keyboard shortcuts (DOM-level, for Ctrl+Shift+C/V fallback)
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.ctrlKey && e.shiftKey && e.key === 'C') {
         e.preventDefault();
@@ -176,6 +224,7 @@ export default function Terminal({ connectionId, connectionName }: TerminalProps
     return () => {
       cancelled = true;
       onDataDisposable.dispose();
+      onKeyDisposable.dispose();
       resizeObserver.disconnect();
       terminalRef.current?.removeEventListener('keydown', handleKeyDown);
 
@@ -222,6 +271,23 @@ export default function Terminal({ connectionId, connectionName }: TerminalProps
             </div>
           )}
         </div>
+      )}
+      {selectedText && status === 'connected' && (
+        <button
+          className="terminal-ai-btn"
+          style={{ left: selectionPos.x, top: selectionPos.y }}
+          onClick={() => {
+            addTerminalOutput(selectedText);
+            setSelectedText('');
+          }}
+          title="Send to AI Assistant"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M12 2L2 7l10 5 10-5-10-5z" />
+            <path d="M2 17l10 5 10-5" />
+            <path d="M2 12l10 5 10-5" />
+          </svg>
+        </button>
       )}
     </div>
   );

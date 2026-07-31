@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo, useLayoutEffect } from 'react';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { useAppStore } from '../store/useAppStore';
+import { useAIStore } from '../store/useAIStore';
 import { useToastStore } from '../store/useToastStore';
 import type { ConnectionConfig, Group } from '../store/useAppStore';
 
@@ -179,6 +180,7 @@ function Sidebar({ onNewConnection, onNewConnectionInGroup, onEditConnection, on
   } = useAppStore();
 
   const { addToast } = useToastStore();
+  const { visible: aiVisible, toggleVisible: toggleAI } = useAIStore();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
@@ -422,6 +424,17 @@ function Sidebar({ onNewConnection, onNewConnectionInGroup, onEditConnection, on
       <div className="sidebar-header">
         <h2 className="sidebar-title">SSH Manager</h2>
         <div className="sidebar-header-actions">
+          <button
+            className="icon-btn"
+            onClick={toggleAI}
+            title="Toggle AI Assistant"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M12 2L2 7l10 5 10-5-10-5z" />
+              <path d="M2 17l10 5 10-5" />
+              <path d="M2 12l10 5 10-5" />
+            </svg>
+          </button>
           <button
             className="icon-btn"
             onClick={toggleTheme}

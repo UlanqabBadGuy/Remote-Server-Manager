@@ -1,9 +1,11 @@
 import { useState, useEffect } from 'react';
 import { useAppStore } from './store/useAppStore';
+import { useAIStore } from './store/useAIStore';
 import Sidebar from './components/Sidebar';
 import TabBar from './components/TabBar';
 import Terminal from './components/Terminal';
 import FileBrowser from './components/FileBrowser';
+import AISidebar from './components/AISidebar';
 import Welcome from './components/Welcome';
 import ConnectionDialog from './components/ConnectionDialog';
 import QuickConnect from './components/QuickConnect';
@@ -95,6 +97,7 @@ function App() {
           )}
         </div>
       </div>
+      <AISidebar />
 
       {showAddDialog && (
         <ConnectionDialog

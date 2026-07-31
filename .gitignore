@@ -18,11 +18,26 @@ src-tauri/target
 # Install scripts
 rustup-init.sh
 
+# AI/IDE generated
+.trae/
+
+# Environment & secrets
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+credentials.json
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
 .idea
-.DS_Store
 *.suo
 *.ntvs*
 *.njsproj

@@ -1,0 +1,8 @@
+# Place project images here
+# logo.png                      -> app logo (referenced by README)
+# screenshots/overview.png      -> main window hero shot
+# screenshots/connections.png   -> connection tree & groups
+# screenshots/terminal.png      -> multi-tab terminal
+# screenshots/ai-chat.png       -> AI assistant chat
+# screenshots/ai-agent.png      -> agent tool-call approval dialog
+# screenshots/file-browser.png  -> SFTP file browser

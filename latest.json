@@ -1,7 +1,7 @@
 {
-  "version": "0.1.0",
-  "notes": "First release",
-  "pub_date": "2026-07-31T12:00:00Z",
+  "version": "0.1.1",
+  "notes": "0.1.1 release",
+  "pub_date": "2026-08-03T17:00:00Z",
   "platforms": {
     "windows-x86_64": {
       "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUYUxjL1RCZVNGSytKR1FXOXBHQU56b2pnaFhwckNiKzJ1eldPYnBpK3JCQ1FzU3UveGxVUzlEWGhFbWYvU3pWdDQ0ZkhkUkNZQ0tqU1VXbkJnMVRHOFdpN0NUN0tKQmdZPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg1NzIyMTM0CWZpbGU6UmVtb3RlIFNTSCBNYW5hZ2VyXzAuMS4wX3g2NF9lbi1VUy5tc2kKaXR5U0t6c3ZxK0VjNGNtV29WaHlweER4bXFhbmlGMjBrZVhuMldLRldMNktkakdlTnN1ZG1PWnRsQ3IrNnNqSlBMazZzVFVDU0RxWXhLUStxQXJMQVE9PQo=",

@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useI18nStore } from '../store/useI18nStore';
+import { t } from '../i18n/translations';
 
 const STORAGE_KEY = 'ssh-manager-tour-done';
 
@@ -9,56 +11,58 @@ interface TourStep {
   placement: 'top' | 'bottom' | 'left' | 'right';
 }
 
-const steps: TourStep[] = [
-  {
-    target: '[data-tour="sidebar"]',
-    title: 'Connection Sidebar',
-    content: 'Manage all your SSH connections here. Right-click to create groups, and organize connections by drag-and-drop or context menu.',
-    placement: 'right',
-  },
-  {
-    target: '[data-tour="new-connection"]',
-    title: 'Add Connection',
-    content: 'Click here to add a new SSH connection. Fill in the host, port, username, and authentication method.',
-    placement: 'bottom',
-  },
-  {
-    target: '[data-tour="quick-connect"]',
-    title: 'Quick Connect',
-    content: 'Jump into a server quickly without saving the configuration. Perfect for one-time access.',
-    placement: 'bottom',
-  },
-  {
-    target: '[data-tour="ai-toggle"]',
-    title: 'AI Assistant',
-    content: 'Toggle the AI sidebar for intelligent help. You can select text in the terminal and send it to AI for analysis.',
-    placement: 'bottom',
-  },
-  {
-    target: '[data-tour="terminal-area"]',
-    title: 'Terminal Workspace',
-    content: 'This is where you interact with remote servers. Select text to send to AI, use Ctrl+C/V for copy/paste, and right-click for more options.',
-    placement: 'left',
-  },
-  {
-    target: '[data-tour="ai-sidebar"]',
-    title: 'AI Chat',
-    content: 'Configure your own API keys from OpenAI, Anthropic, Google, DeepSeek, or custom providers. The AI can read files, run commands, and help you troubleshoot.',
-    placement: 'left',
-  },
-  {
-    target: '[data-tour="sidebar-tree"]',
-    title: 'File Browser',
-    content: 'Right-click any connection and select "Open File Browser" to browse, upload, and download files — just like MobaXterm.',
-    placement: 'right',
-  },
-  {
-    target: '[data-tour="import-export"]',
-    title: 'Import & Export',
-    content: 'Backup or migrate your connections easily. Export to JSON and import on another machine.',
-    placement: 'left',
-  },
-];
+function getSteps(tr: (key: string) => string): TourStep[] {
+  return [
+    {
+      target: '[data-tour="sidebar"]',
+      title: tr('tour.step1Title'),
+      content: tr('tour.step1Content'),
+      placement: 'right',
+    },
+    {
+      target: '[data-tour="new-connection"]',
+      title: tr('tour.step2Title'),
+      content: tr('tour.step2Content'),
+      placement: 'bottom',
+    },
+    {
+      target: '[data-tour="quick-connect"]',
+      title: tr('tour.step3Title'),
+      content: tr('tour.step3Content'),
+      placement: 'bottom',
+    },
+    {
+      target: '[data-tour="ai-toggle"]',
+      title: tr('tour.step4Title'),
+      content: tr('tour.step4Content'),
+      placement: 'bottom',
+    },
+    {
+      target: '[data-tour="terminal-area"]',
+      title: tr('tour.step5Title'),
+      content: tr('tour.step5Content'),
+      placement: 'left',
+    },
+    {
+      target: '[data-tour="ai-sidebar"]',
+      title: tr('tour.step6Title'),
+      content: tr('tour.step6Content'),
+      placement: 'left',
+    },
+    {
+      target: '[data-tour="sidebar-tree"]',
+      title: tr('tour.step7Title'),
+      content: tr('tour.step7Content'),
+      placement: 'right',
+    },
+    {
+      target: '[data-tour="import-export"]',
+      title: tr('tour.step8Title'),
+      content: tr('tour.step8Content'),
+      placement: 'left',
+    },
+  ];
+}
 
 export function hasCompletedTour(): boolean {
   return localStorage.getItem(STORAGE_KEY) === 'true';
@@ -66,6 +70,7 @@ export function hasCompletedTour(): boolean {
 
 export function resetTour() {
   localStorage.removeItem(STORAGE_KEY);
+  window.dispatchEvent(new CustomEvent('tour-restart'));
 }
 
 function getPlacementStyle(
@@ -129,6 +134,9 @@ function getArrowStyle(placement: TourStep['placement']): React.CSSProperties {
 }
 
 export default function TourGuide() {
+  const { lang } = useI18nStore();
+  const tr = (key: string) => t[lang][key] ?? key;
+
   const [active, setActive] = useState(false);
   const [stepIndex, setStepIndex] = useState(0);
   const [tooltipStyle, setTooltipStyle] = useState<React.CSSProperties>({});
@@ -155,12 +163,21 @@ export default function TourGuide() {
     return () => clearTimeout(timer);
   }, [startTour]);
 
+  // Listen for manual restart from resetTour()
+  useEffect(() => {
+    const handleRestart = () => {
+      startTour();
+    };
+    window.addEventListener('tour-restart', handleRestart);
+    return () => window.removeEventListener('tour-restart', handleRestart);
+  }, [startTour]);
+
   // Position tooltip
   useEffect(() => {
     if (!active) return;
 
     const updatePosition = () => {
-      const step = steps[stepIndex];
+      const step = getSteps(tr)[stepIndex];
       const target = document.querySelector(step.target);
       if (!target || !tooltipRef.current) return;
 
@@ -182,7 +199,7 @@ export default function TourGuide() {
   }, [active, stepIndex]);
 
   const handleNext = () => {
-    if (stepIndex < steps.length - 1) {
+    if (stepIndex < getSteps(tr).length - 1) {
       setStepIndex(stepIndex + 1);
     } else {
       stopTour();
@@ -195,7 +212,7 @@ export default function TourGuide() {
 
   if (!active) return null;
 
-  const step = steps[stepIndex];
+  const step = getSteps(tr)[stepIndex];
 
   return (
     <>
@@ -207,7 +224,7 @@ export default function TourGuide() {
         <div className="tour-arrow" style={arrowStyle} />
         <div className="tour-tooltip-header">
           <span className="tour-step-counter">
-            {stepIndex + 1} / {steps.length}
+            {stepIndex + 1} / {getSteps(tr).length}
           </span>
           <button className="tour-close-btn" onClick={stopTour}>
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -220,10 +237,10 @@ export default function TourGuide() {
         <div className="tour-tooltip-content">{step.content}</div>
         <div className="tour-tooltip-footer">
           <button className="tour-btn tour-btn-skip" onClick={stopTour}>
-            Skip
+            {tr('tour.skip')}
           </button>
           <div className="tour-dots">
-            {steps.map((_, i) => (
+            {getSteps(tr).map((_, i) => (
               <div
                 key={i}
                 className={`tour-dot ${i === stepIndex ? 'active' : ''}`}
@@ -233,11 +250,11 @@ export default function TourGuide() {
           <div className="tour-nav-btns">
             {stepIndex > 0 && (
               <button className="tour-btn tour-btn-prev" onClick={handlePrev}>
-                Back
+                {tr('tour.back')}
               </button>
             )}
             <button className="tour-btn tour-btn-next" onClick={handleNext}>
-              {stepIndex === steps.length - 1 ? 'Finish' : 'Next'}
+              {stepIndex === getSteps(tr).length - 1 ? tr('tour.finish') : tr('tour.next')}
             </button>
           </div>
         </div>

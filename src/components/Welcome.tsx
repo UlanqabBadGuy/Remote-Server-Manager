@@ -1,4 +1,6 @@
 import { useAppStore } from '../store/useAppStore';
+import { useI18nStore } from '../store/useI18nStore';
+import { t } from '../i18n/translations';
 
 interface WelcomeProps {
   onNewConnection: () => void;
@@ -7,6 +9,8 @@ interface WelcomeProps {
 
 function Welcome({ onNewConnection, onQuickConnect }: WelcomeProps) {
   const { connections, openTerminal } = useAppStore();
+  const { lang } = useI18nStore();
+  const tr = (key: string) => t[lang][key] ?? key;
 
   const recentConnections = connections.slice(0, 5);
 
@@ -23,10 +27,8 @@ function Welcome({ onNewConnection, onQuickConnect }: WelcomeProps) {
             <line x1="12" y1="19" x2="20" y2="19" />
           </svg>
         </div>
-        <h1 className="welcome-title">Remote SSH Manager</h1>
-        <p className="welcome-subtitle">
-          Manage your SSH connections, open terminals, and browse remote files — all in one place.
-        </p>
+        <h1 className="welcome-title">{tr('welcome.title')}</h1>
+        <p className="welcome-subtitle">{tr('welcome.subtitle')}</p>
 
         <div className="welcome-actions">
           <button className="welcome-btn primary" onClick={onNewConnection}>
@@ -34,19 +36,19 @@ function Welcome({ onNewConnection, onQuickConnect }: WelcomeProps) {
               <line x1="12" y1="5" x2="12" y2="19" />
               <line x1="5" y1="12" x2="19" y2="12" />
             </svg>
-            New Connection
+            {tr('welcome.newConnection')}
           </button>
           <button className="welcome-btn" onClick={onQuickConnect}>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <polyline points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
             </svg>
-            Quick Connect
+            {tr('welcome.quickConnect')}
           </button>
         </div>
 
         {recentConnections.length > 0 && (
           <div className="welcome-recent">
-            <h3 className="recent-title">Recent Connections</h3>
+            <h3 className="recent-title">{tr('welcome.recent')}</h3>
             <div className="recent-list">
               {recentConnections.map((conn) => (
                 <div

@@ -304,6 +304,10 @@ interface AIState {
   updateSessionModel: (sessionId: string, modelId: string) => void;
   setInputText: (text: string) => void;
   sendMessage: () => Promise<void>;
+  stopGeneration: () => void;
+  undoLastTurn: () => void;
+  revertToBeforeTurn: (messageId: string) => void;
+  retryTurn: (userMessageId: string) => void;
   addTerminalOutput: (text: string, startLine: number, endLine: number) => void;
   clearTerminalReference: () => void;
   setActiveSshSession: (id: string | null) => void;
@@ -344,6 +348,7 @@ function saveConfig(state: Pick<AIState, 'models' | 'sessions' | 'activeSessionI
 
 export const useAIStore = create<AIState>((set, get) => {
   const initial = loadConfig();
+  let abortController: AbortController | null = null;
 
   return {
     visible: false,
@@ -423,7 +428,13 @@ export const useAIStore = create<AIState>((set, get) => {
     },
 
     createSession: (title) => {
-      const { models } = get();
+      const { models, sessions } = get();
+      // If latest session has no messages, reuse it
+      if (sessions.length > 0 && sessions[0].messages.length === 0) {
+        set({ activeSessionId: sessions[0].id });
+        saveConfig(get());
+        return sessions[0].id;
+      }
       const modelId = models[0]?.id ?? '';
       const session: ChatSession = {
         id: crypto.randomUUID(),
@@ -476,6 +487,9 @@ export const useAIStore = create<AIState>((set, get) => {
       const { inputText, activeSessionId, sessions, models, terminalReference, activeSshSessionId } = state;
 
       if (!activeSessionId) return;
+
+      // Create abort controller for this generation
+      abortController = new AbortController();
 
       const session = sessions.find((s) => s.id === activeSessionId);
       if (!session) return;
@@ -651,7 +665,7 @@ export const useAIStore = create<AIState>((set, get) => {
             headers['Authorization'] = `Bearer ${model.apiKey}`;
           }
 
-          const response = await fetch(model.baseUrl, { method: 'POST', headers, body: JSON.stringify(requestBody) });
+          const response = await fetch(model.baseUrl, { method: 'POST', headers, body: JSON.stringify(requestBody), signal: abortController.signal });
 
           if (!response.ok) {
             const errText = await response.text().catch(() => '');
@@ -895,8 +909,41 @@ export const useAIStore = create<AIState>((set, get) => {
           }
         }
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        set({ error: msg, loading: false });
+        const isAbort = err instanceof Error && err.name === 'AbortError';
+        if (isAbort) {
+          // Finalize any streaming message on abort
+          const { activeSessionId: sid } = get();
+          if (sid) {
+            set((s) => ({
+              sessions: s.sessions.map((sess) =>
+                sess.id === sid
+                  ? {
+                      ...sess,
+                      messages: sess.messages.map((m) =>
+                        m.isStreaming ? { ...m, isStreaming: false } : m
+                      ),
+                      updatedAt: Date.now(),
+                    }
+                  : sess
+              ),
+              loading: false,
+            }));
+            saveConfig(get());
+          } else {
+            set({ loading: false });
+          }
+        } else {
+          const msg = err instanceof Error ? err.message : String(err);
+          set({ error: msg, loading: false });
+        }
+      } finally {
+        abortController = null;
+        // Dismiss any pending tool confirmation
+        const { pendingToolConfirmation } = get();
+        if (pendingToolConfirmation) {
+          pendingToolConfirmation.resolve(false);
+          set({ pendingToolConfirmation: null });
+        }
       }
     },
 
@@ -907,6 +954,73 @@ export const useAIStore = create<AIState>((set, get) => {
     clearTerminalReference: () => set({ terminalReference: null }),
 
     setError: (e) => set({ error: e }),
+
+    stopGeneration: () => {
+      if (abortController) {
+        abortController.abort();
+      }
+    },
+
+    undoLastTurn: () => {
+      const { activeSessionId } = get();
+      if (!activeSessionId) return;
+
+      set((s) => ({
+        sessions: s.sessions.map((sess) => {
+          if (sess.id !== activeSessionId) return sess;
+          const msgs = [...sess.messages];
+          // Remove the last assistant message (if exists)
+          if (msgs.length > 0 && msgs[msgs.length - 1].role === 'assistant') {
+            msgs.pop();
+            // Also remove trailing tool messages
+            while (msgs.length > 0 && msgs[msgs.length - 1].role === 'tool') {
+              msgs.pop();
+            }
+          }
+          // Remove the last user message
+          if (msgs.length > 0 && msgs[msgs.length - 1].role === 'user') {
+            msgs.pop();
+          }
+          return { ...sess, messages: msgs, updatedAt: Date.now() };
+        }),
+      }));
+      saveConfig(get());
+    },
+
+    revertToBeforeTurn: (messageId) => {
+      const { activeSessionId } = get();
+      if (!activeSessionId) return;
+
+      set((s) => ({
+        sessions: s.sessions.map((sess) => {
+          if (sess.id !== activeSessionId) return sess;
+          const idx = sess.messages.findIndex((m) => m.id === messageId);
+          if (idx < 0) return sess;
+          // Keep only messages before this user message
+          const msgs = sess.messages.slice(0, idx);
+          return { ...sess, messages: msgs, updatedAt: Date.now() };
+        }),
+      }));
+      saveConfig(get());
+    },
+
+    retryTurn: async (userMessageId) => {
+      const { activeSessionId } = get();
+      if (!activeSessionId) return;
+      const session = get().sessions.find((s) => s.id === activeSessionId);
+      if (!session) return;
+      const userMsg = session.messages.find((m) => m.id === userMessageId);
+      if (!userMsg || userMsg.role !== 'user') return;
+      // Extract plain text (strip terminal reference tags)
+      const plainContent = userMsg.content.replace(/\[Terminal \d+-\d+\]\s*```[\s\S]*?```/g, '').trim();
+      // Revert to before this user message
+      get().revertToBeforeTurn(userMessageId);
+      // Set input and trigger send
+      set({ inputText: plainContent });
+      // Small delay to ensure state is updated
+      await new Promise((r) => setTimeout(r, 50));
+      await get().sendMessage();
+    },
 
     confirmToolCalls: (approved) => {
       const { pendingToolConfirmation } = get();

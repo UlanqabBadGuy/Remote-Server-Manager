@@ -1,8 +1,11 @@
 import { useState, useEffect, useCallback, useRef, useMemo, useLayoutEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { useAppStore } from '../store/useAppStore';
 import { useAIStore } from '../store/useAIStore';
 import { useToastStore } from '../store/useToastStore';
+import { useI18nStore } from '../store/useI18nStore';
+import { t, tf } from '../i18n/translations';
 import { resetTour } from './TourGuide';
 import type { ConnectionConfig, Group } from '../store/useAppStore';
 
@@ -182,6 +185,8 @@ function Sidebar({ onNewConnection, onNewConnectionInGroup, onEditConnection, on
 
   const { addToast } = useToastStore();
   const { toggleVisible: toggleAI } = useAIStore();
+  const { lang } = useI18nStore();
+  const tr = (key: string) => t[lang][key] ?? key;
 
   const [searchQuery, setSearchQuery] = useState('');
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
@@ -268,7 +273,7 @@ function Sidebar({ onNewConnection, onNewConnectionInGroup, onEditConnection, on
 
   // --- Group operations ---
   const handleAddRootGroup = useCallback(async () => {
-    const name = prompt('Enter group name:');
+    const name = prompt(tr('sidebar.enterGroupName'));
     if (name && name.trim()) {
       await addGroup(name.trim(), null);
     }
@@ -279,13 +284,13 @@ function Sidebar({ onNewConnection, onNewConnectionInGroup, onEditConnection, on
       const selected = await open({
         multiple: false,
         filters: [{ name: 'JSON', extensions: ['json'] }],
-        title: 'Select connections file to import',
+        title: tr('sidebar.selectImportFile'),
       });
       if (!selected) return;
       await importConnections(selected as string);
-      addToast('success', 'Connections imported successfully');
+      addToast('success', tr('sidebar.importSuccess'));
     } catch (error) {
-      addToast('error', `Failed to import: ${error}`);
+      addToast('error', `${tr('sidebar.importFailed')}: ${error}`);
     }
   }, [importConnections, addToast]);
 
@@ -294,18 +299,18 @@ function Sidebar({ onNewConnection, onNewConnectionInGroup, onEditConnection, on
       const savePath = await save({
         defaultPath: 'connections.json',
         filters: [{ name: 'JSON', extensions: ['json'] }],
-        title: 'Export connections',
+        title: tr('sidebar.exportDialogTitle'),
       });
       if (!savePath) return;
       await exportConnections(savePath);
-      addToast('success', 'Connections exported successfully');
+      addToast('success', tr('sidebar.exportSuccess'));
     } catch (error) {
-      addToast('error', `Failed to export: ${error}`);
+      addToast('error', `${tr('sidebar.exportFailed')}: ${error}`);
     }
   }, [exportConnections, addToast]);
 
   const handleAddSubGroup = useCallback(async (parentId: string) => {
-    const name = prompt('Enter sub-group name:');
+    const name = prompt(tr('sidebar.enterSubGroupName'));
     if (name && name.trim()) {
       await addGroup(name.trim(), parentId);
       // Expand the parent so the new sub-group is visible
@@ -322,15 +327,15 @@ function Sidebar({ onNewConnection, onNewConnectionInGroup, onEditConnection, on
     const hasChildren = groups.some((g) => g.parent_id === group.id);
     const hasConnections = connections.some((c) => c.group_id === group.id);
     const msg = hasChildren || hasConnections
-      ? `Delete group "${group.name}" and all its sub-groups? Connections will become ungrouped.`
-      : `Delete group "${group.name}"?`;
+      ? tf(tr('sidebar.deleteGroupMsg'), { name: group.name })
+      : tf(tr('sidebar.deleteGroupSimpleMsg'), { name: group.name });
     if (!confirm(msg)) return;
     await deleteGroup(group.id);
     setContextMenu({ visible: false });
   }, [deleteGroup, groups, connections]);
 
   const handleRenameGroup = useCallback(async (group: Group) => {
-    const name = prompt('Rename group:', group.name);
+    const name = prompt(tr('sidebar.renameGroup'), group.name);
     if (name && name.trim() && name !== group.name) {
       await renameGroup(group.id, name.trim());
     }
@@ -406,7 +411,7 @@ function Sidebar({ onNewConnection, onNewConnectionInGroup, onEditConnection, on
 
   // Build all groups for the "Move to" submenu
   const allGroupOptions = useMemo(() => {
-    const opts: { id: string | null; label: string }[] = [{ id: null, label: 'Ungrouped' }];
+    const opts: { id: string | null; label: string }[] = [{ id: null, label: tr('sidebar.ungrouped') }];
     function addGroupsForParent(parentId: string | null, prefix: string) {
       const children = groups
         .filter((g) => g.parent_id === parentId)
@@ -423,12 +428,12 @@ function Sidebar({ onNewConnection, onNewConnectionInGroup, onEditConnection, on
   return (
     <div className="sidebar" data-tour="sidebar">
       <div className="sidebar-header">
-        <h2 className="sidebar-title">SSH Manager</h2>
+        <h2 className="sidebar-title">{tr('sidebar.title')}</h2>
         <div className="sidebar-header-actions">
           <button
             className="icon-btn"
             onClick={toggleAI}
-            title="Toggle AI Assistant"
+            title={tr('sidebar.toggleAI')}
             data-tour="ai-toggle"
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -440,7 +445,7 @@ function Sidebar({ onNewConnection, onNewConnectionInGroup, onEditConnection, on
           <button
             className="icon-btn"
             onClick={toggleTheme}
-            title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
+            title={tf(tr('sidebar.switchTheme'), { theme: theme === 'light' ? tr('sidebar.themeDark') : tr('sidebar.themeLight') })}
           >
             {theme === 'light' ? (
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -463,7 +468,7 @@ function Sidebar({ onNewConnection, onNewConnectionInGroup, onEditConnection, on
           <button
             className="icon-btn"
             onClick={resetTour}
-            title="Start guided tour"
+            title={tr('sidebar.startTour')}
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <circle cx="12" cy="12" r="10" />
@@ -482,7 +487,7 @@ function Sidebar({ onNewConnection, onNewConnectionInGroup, onEditConnection, on
         <input
           type="text"
           className="search-input"
-          placeholder="Search connections..."
+          placeholder={tr('sidebar.searchPlaceholder')}
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
         />
@@ -494,13 +499,13 @@ function Sidebar({ onNewConnection, onNewConnectionInGroup, onEditConnection, on
             <line x1="12" y1="5" x2="12" y2="19" />
             <line x1="5" y1="12" x2="19" y2="12" />
           </svg>
-          New Connection
+          {tr('sidebar.newConnection')}
         </button>
         <button className="sidebar-btn" onClick={onQuickConnect} data-tour="quick-connect">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <polyline points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
           </svg>
-          Quick Connect
+          {tr('sidebar.quickConnect')}
         </button>
       </div>
 
@@ -547,41 +552,41 @@ function Sidebar({ onNewConnection, onNewConnectionInGroup, onEditConnection, on
         {filteredConnections.length === 0 && groups.length === 0 && (
           <div className="empty-state">
             {searchQuery
-              ? 'No connections match your search.'
-              : 'No connections yet. Add one to get started.'}
+              ? tr('sidebar.noMatch')
+              : tr('sidebar.empty')}
           </div>
         )}
       </div>
 
       <div className="sidebar-footer" data-tour="import-export">
-        <button className="sidebar-btn footer-btn" onClick={handleAddRootGroup} title="Add new group">
+        <button className="sidebar-btn footer-btn" onClick={handleAddRootGroup} title={tr('sidebar.addGroupTitle')}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
             <line x1="12" y1="11" x2="12" y2="17" />
             <line x1="9" y1="14" x2="15" y2="14" />
           </svg>
-          Add Group
+          {tr('sidebar.addGroup')}
         </button>
-        <button className="sidebar-btn footer-btn" onClick={handleImport} title="Import connections">
+        <button className="sidebar-btn footer-btn" onClick={handleImport} title={tr('sidebar.importTitle')}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
             <polyline points="7 10 12 15 17 10" />
             <line x1="12" y1="15" x2="12" y2="3" />
           </svg>
-          Import
+          {tr('sidebar.import')}
         </button>
-        <button className="sidebar-btn footer-btn" onClick={handleExport} title="Export connections">
+        <button className="sidebar-btn footer-btn" onClick={handleExport} title={tr('sidebar.exportTitle')}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
             <polyline points="17 8 12 3 7 8" />
             <line x1="12" y1="3" x2="12" y2="15" />
           </svg>
-          Export
+          {tr('sidebar.export')}
         </button>
       </div>
 
       {/* Context Menu */}
-      {contextMenu.visible && (
+      {contextMenu.visible && createPortal(
         <div
           ref={contextMenuRef}
           className="context-menu"
@@ -597,7 +602,7 @@ function Sidebar({ onNewConnection, onNewConnectionInGroup, onEditConnection, on
                   <polyline points="4 17 10 11 4 5" />
                   <line x1="12" y1="19" x2="20" y2="19" />
                 </svg>
-                Open Terminal
+                {tr('sidebar.openTerminal')}
               </div>
               <div
                 className="context-menu-item"
@@ -606,7 +611,7 @@ function Sidebar({ onNewConnection, onNewConnectionInGroup, onEditConnection, on
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
                 </svg>
-                Open File Browser
+                {tr('sidebar.openFileBrowser')}
               </div>
               <div className="context-menu-divider" />
               <div
@@ -617,7 +622,7 @@ function Sidebar({ onNewConnection, onNewConnectionInGroup, onEditConnection, on
                   <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
                   <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
                 </svg>
-                Edit
+                {tr('sidebar.edit')}
               </div>
               {/* Move to group submenu */}
               <div className="context-menu-item context-menu-submenu-trigger">
@@ -626,7 +631,7 @@ function Sidebar({ onNewConnection, onNewConnectionInGroup, onEditConnection, on
                   <polyline points="12 11 12 17" />
                   <polyline points="9 14 15 14" />
                 </svg>
-                Move to Group
+                {tr('sidebar.moveToGroup')}
                 <svg className="submenu-arrow" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <polyline points="9 18 15 12 9 6" />
                 </svg>
@@ -651,7 +656,7 @@ function Sidebar({ onNewConnection, onNewConnectionInGroup, onEditConnection, on
                   <polyline points="3 6 5 6 21 6" />
                   <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
                 </svg>
-                Delete
+                {tr('sidebar.delete')}
               </div>
             </>
           )}
@@ -673,7 +678,7 @@ function Sidebar({ onNewConnection, onNewConnectionInGroup, onEditConnection, on
                   <line x1="19" y1="18" x2="19" y2="22" />
                   <line x1="15" y1="18" x2="23" y2="18" />
                 </svg>
-                Add Connection
+                {tr('sidebar.addConnection')}
               </div>
               <div
                 className="context-menu-item"
@@ -684,7 +689,7 @@ function Sidebar({ onNewConnection, onNewConnectionInGroup, onEditConnection, on
                   <line x1="12" y1="11" x2="12" y2="17" />
                   <line x1="9" y1="14" x2="15" y2="14" />
                 </svg>
-                Add Sub-group
+                {tr('sidebar.addSubGroup')}
               </div>
               <div
                 className="context-menu-item"
@@ -694,7 +699,7 @@ function Sidebar({ onNewConnection, onNewConnectionInGroup, onEditConnection, on
                   <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
                   <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
                 </svg>
-                Rename
+                {tr('sidebar.rename')}
               </div>
               <div className="context-menu-divider" />
               <div
@@ -705,11 +710,12 @@ function Sidebar({ onNewConnection, onNewConnectionInGroup, onEditConnection, on
                   <polyline points="3 6 5 6 21 6" />
                   <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
                 </svg>
-                Delete Group
+                {tr('sidebar.deleteGroup')}
               </div>
             </>
           )}
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

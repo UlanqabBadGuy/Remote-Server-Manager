@@ -1,6 +1,10 @@
 import { useAppStore } from '../store/useAppStore';
+import { useI18nStore } from '../store/useI18nStore';
+import { t } from '../i18n/translations';
 
 function TabBar() {
+  const { lang } = useI18nStore();
+  const tr = (key: string) => t[lang][key] ?? key;
   const { tabs, activeTabId, setActiveTab, closeTab } = useAppStore();
 
   if (tabs.length === 0) {
@@ -35,7 +39,7 @@ function TabBar() {
                 e.stopPropagation();
                 closeTab(tab.id);
               }}
-              title="Close tab"
+              title={tr('tab.close')}
             >
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <line x1="18" y1="6" x2="6" y2="18" />

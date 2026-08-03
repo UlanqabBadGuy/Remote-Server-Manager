@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useAppStore } from './store/useAppStore';
 import { useAIStore } from './store/useAIStore';
+import MenuBar from './components/MenuBar';
 import Sidebar from './components/Sidebar';
 import TabBar from './components/TabBar';
 import Terminal from './components/Terminal';
@@ -138,8 +139,10 @@ function App() {
 
   return (
     <div className={`app ${theme} ${dragging ? 'app-dragging' : ''}`}>
-      <div style={{ width: `${leftWidth}px`, minWidth: `${leftWidth}px`, flexShrink: 0 }}>
-        <Sidebar
+      <MenuBar />
+      <div className="app-main">
+        <div style={{ width: `${leftWidth}px`, minWidth: `${leftWidth}px`, flexShrink: 0 }}>
+          <Sidebar
           onNewConnection={handleNewConnection}
           onNewConnectionInGroup={handleNewConnectionInGroup}
           onEditConnection={handleEditConnection}
@@ -221,6 +224,7 @@ function App() {
       <Toast />
       <TourGuide />
       <UpdateChecker />
+      </div>
     </div>
   );
 }

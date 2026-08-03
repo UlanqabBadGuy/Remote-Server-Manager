@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../store/useAppStore';
 import { useToastStore } from '../store/useToastStore';
+import { useI18nStore } from '../store/useI18nStore';
+import { t } from '../i18n/translations';
 import type { ConnectionConfig } from '../store/useAppStore';
 
 interface QuickConnectProps {
@@ -28,13 +30,16 @@ function QuickConnect({ onClose }: QuickConnectProps) {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [connecting, setConnecting] = useState(false);
 
+  const { lang } = useI18nStore();
+  const tr = (key: string) => t[lang][key] ?? key;
+
   const validate = (): boolean => {
     const newErrors: Record<string, string> = {};
-    if (!formData.host.trim()) newErrors.host = 'Host is required';
+    if (!formData.host.trim()) newErrors.host = tr('quick.errHostRequired');
     if (!formData.port || formData.port < 1 || formData.port > 65535)
-      newErrors.port = 'Port must be between 1 and 65535';
-    if (!formData.username.trim()) newErrors.username = 'Username is required';
-    if (!formData.password.trim()) newErrors.password = 'Password is required';
+      newErrors.port = tr('quick.errPortRange');
+    if (!formData.username.trim()) newErrors.username = tr('quick.errUsernameRequired');
+    if (!formData.password.trim()) newErrors.password = tr('quick.errPasswordRequired');
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
@@ -56,7 +61,7 @@ function QuickConnect({ onClose }: QuickConnectProps) {
         auth_type: 'password' as const,
         key_path: null,
         group_id: null,
-        note: 'Quick connect session',
+        note: tr('quick.note'),
       };
 
       const newConn = await invoke<ConnectionConfig>('add_connection', { config });
@@ -71,7 +76,7 @@ function QuickConnect({ onClose }: QuickConnectProps) {
       onClose();
     } catch (error) {
       console.error('Failed to quick connect:', error);
-      addToast('error', `Failed to connect: ${error}`);
+      addToast('error', `${tr('quick.connectFailed')}: ${error}`);
     } finally {
       setConnecting(false);
     }
@@ -92,7 +97,7 @@ function QuickConnect({ onClose }: QuickConnectProps) {
     <div className="dialog-overlay" onClick={onClose}>
       <div className="dialog quick-connect-dialog" onClick={(e) => e.stopPropagation()}>
         <div className="dialog-header">
-          <h3>Quick Connect</h3>
+          <h3>{tr('quick.title')}</h3>
           <button className="dialog-close-btn" onClick={onClose}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <line x1="18" y1="6" x2="6" y2="18" />
@@ -104,19 +109,19 @@ function QuickConnect({ onClose }: QuickConnectProps) {
         <form className="dialog-form" onSubmit={handleSubmit}>
           <div className="form-row">
             <div className="form-group flex-3">
-              <label className="form-label" htmlFor="qc-host">Host</label>
+              <label className="form-label" htmlFor="qc-host">{tr('quick.host')}</label>
               <input
                 id="qc-host"
                 type="text"
                 className={`form-input ${errors.host ? 'error' : ''}`}
                 value={formData.host}
                 onChange={(e) => updateField('host', e.target.value)}
-                placeholder="192.168.1.1"
+                placeholder={tr('quick.hostPlaceholder')}
               />
               {errors.host && <span className="form-error">{errors.host}</span>}
             </div>
             <div className="form-group flex-1">
-              <label className="form-label" htmlFor="qc-port">Port</label>
+              <label className="form-label" htmlFor="qc-port">{tr('quick.port')}</label>
               <input
                 id="qc-port"
                 type="number"
@@ -131,27 +136,27 @@ function QuickConnect({ onClose }: QuickConnectProps) {
           </div>
 
           <div className="form-group">
-            <label className="form-label" htmlFor="qc-username">Username</label>
+            <label className="form-label" htmlFor="qc-username">{tr('quick.username')}</label>
             <input
               id="qc-username"
               type="text"
               className={`form-input ${errors.username ? 'error' : ''}`}
               value={formData.username}
               onChange={(e) => updateField('username', e.target.value)}
-              placeholder="root"
+              placeholder={tr('quick.usernamePlaceholder')}
             />
             {errors.username && <span className="form-error">{errors.username}</span>}
           </div>
 
           <div className="form-group">
-            <label className="form-label" htmlFor="qc-password">Password</label>
+            <label className="form-label" htmlFor="qc-password">{tr('quick.password')}</label>
             <input
               id="qc-password"
               type="password"
               className={`form-input ${errors.password ? 'error' : ''}`}
               value={formData.password}
               onChange={(e) => updateField('password', e.target.value)}
-              placeholder="Enter password"
+              placeholder={tr('quick.passwordPlaceholder')}
             />
             {errors.password && <span className="form-error">{errors.password}</span>}
           </div>
@@ -162,10 +167,10 @@ function QuickConnect({ onClose }: QuickConnectProps) {
 
           <div className="dialog-footer">
             <button type="button" className="dialog-btn cancel" onClick={onClose}>
-              Cancel
+              {tr('quick.cancel')}
             </button>
             <button type="submit" className="dialog-btn primary" disabled={connecting}>
-              {connecting ? 'Connecting...' : 'Connect'}
+              {connecting ? tr('quick.connecting') : tr('quick.connect')}
             </button>
           </div>
         </form>

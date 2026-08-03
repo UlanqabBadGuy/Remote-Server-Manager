@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { useAIStore, type ModelConfig, type ToolCall } from '../store/useAIStore';
+import { useI18nStore } from '../store/useI18nStore';
+import { t, tf } from '../i18n/translations';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -10,7 +12,7 @@ function formatTime(ts: number): string {
 }
 
 // Thought Block Component (collapsible)
-function ThoughtBlock({ content }: { content: string }) {
+function ThoughtBlock({ content, tr }: { content: string; tr: (key: string) => string }) {
   const [expanded, setExpanded] = useState(false);
 
   return (
@@ -30,7 +32,7 @@ function ThoughtBlock({ content }: { content: string }) {
         >
           <polyline points="9 18 15 12 9 6" />
         </svg>
-        <span>Thought</span>
+        <span>{tr('ai.thought')}</span>
       </button>
       {expanded && (
         <div className="ai-thought-content">
@@ -42,7 +44,7 @@ function ThoughtBlock({ content }: { content: string }) {
 }
 
 // Tool Call Card Component
-function ToolCallCard({ toolCall }: { toolCall: ToolCall }) {
+function ToolCallCard({ toolCall, tr }: { toolCall: ToolCall; tr: (key: string) => string }) {
   const [expanded, setExpanded] = useState(false);
 
   const getStatusIcon = () => {
@@ -69,9 +71,9 @@ function ToolCallCard({ toolCall }: { toolCall: ToolCall }) {
   };
 
   const getStatusText = () => {
-    if (toolCall.status === 'pending') return 'Running...';
-    if (toolCall.status === 'success') return 'Completed';
-    return 'Failed';
+    if (toolCall.status === 'pending') return tr('ai.running');
+    if (toolCall.status === 'success') return tr('ai.completed');
+    return tr('ai.failed');
   };
 
   return (
@@ -97,12 +99,12 @@ function ToolCallCard({ toolCall }: { toolCall: ToolCall }) {
       {expanded && (
         <div className="ai-tool-call-details">
           <div className="ai-tool-call-args">
-            <div className="ai-tool-call-label">Arguments:</div>
+            <div className="ai-tool-call-label">{tr('ai.arguments')}</div>
             <pre>{toolCall.arguments}</pre>
           </div>
           {toolCall.result && (
             <div className="ai-tool-call-result">
-              <div className="ai-tool-call-label">Result:</div>
+              <div className="ai-tool-call-label">{tr('ai.result')}</div>
               <pre>{toolCall.result}</pre>
             </div>
           )}
@@ -151,6 +153,9 @@ export default function AISidebar() {
     updateSessionModel,
     setInputText, sendMessage, setError, clearTerminalReference,
     confirmToolCalls,
+    stopGeneration,
+    revertToBeforeTurn,
+    retryTurn,
   } = useAIStore();
 
   const [showConfig, setShowConfig] = useState(false);
@@ -165,6 +170,9 @@ export default function AISidebar() {
   });
   const [fetchedModels, setFetchedModels] = useState<string[]>([]);
   const [fetchingModels, setFetchingModels] = useState(false);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const { lang } = useI18nStore();
+  const tr = (key: string) => t[lang][key] ?? key;
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -220,7 +228,7 @@ export default function AISidebar() {
 
   const handleFetchModels = async () => {
     if (!modelForm.apiKey) {
-      setError('Please enter API Key first');
+      setError(tr('ai.enterApiKey'));
       return;
     }
     setFetchingModels(true);
@@ -310,16 +318,16 @@ export default function AISidebar() {
             <path d="M2 17l10 5 10-5" />
             <path d="M2 12l10 5 10-5" />
           </svg>
-          <span>AI Assistant</span>
+          <span>{tr('ai.title')}</span>
         </div>
         <div className="ai-sidebar-actions">
-          <button className="ai-icon-btn" onClick={handleNewChat} title="New Chat">
+          <button className="ai-icon-btn" onClick={handleNewChat} title={tr('ai.newChat')}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <line x1="12" y1="5" x2="12" y2="19" />
               <line x1="5" y1="12" x2="19" y2="12" />
             </svg>
           </button>
-          <button className="ai-icon-btn" onClick={() => setShowSessions(!showSessions)} title="Chat History">
+          <button className="ai-icon-btn" onClick={() => setShowSessions(!showSessions)} title={tr('ai.chatHistory')}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
             </svg>
@@ -327,14 +335,14 @@ export default function AISidebar() {
           <button
             className="ai-icon-btn"
             onClick={() => { handleCancelEdit(); setShowConfig(true); }}
-            title="Settings"
+            title={tr('ai.settings')}
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <circle cx="12" cy="12" r="3" />
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
             </svg>
           </button>
-          <button className="ai-icon-btn" onClick={() => setVisible(false)} title="Close">
+          <button className="ai-icon-btn" onClick={() => setVisible(false)} title={tr('ai.close')}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <line x1="18" y1="6" x2="6" y2="18" />
               <line x1="6" y1="6" x2="18" y2="18" />
@@ -350,10 +358,10 @@ export default function AISidebar() {
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" opacity="0.4">
               <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
             </svg>
-            <p>Select text in the terminal and send it here, or type your question below.</p>
+            <p>{tr('ai.emptyHint')}</p>
             {models.length === 0 && (
               <button className="ai-config-hint" onClick={() => { handleCancelEdit(); setShowConfig(true); }}>
-                Configure AI
+                {tr('ai.configureAI')}
               </button>
             )}
           </div>
@@ -366,19 +374,32 @@ export default function AISidebar() {
           return (
             <div key={msg.id} className={`ai-message ${msg.role}`}>
               <div className="ai-message-header">
-                <span className="ai-message-role">{msg.role === 'user' ? 'You' : 'AI'}</span>
+                <span className="ai-message-role">{msg.role === 'user' ? tr('ai.roleYou') : tr('ai.roleAI')}</span>
                 {msg.model && <span className="ai-message-model">{msg.model}</span>}
                 <span className="ai-message-time">{formatTime(msg.timestamp)}</span>
+                {msg.role === 'user' && !loading && (
+                  <button
+                    className="ai-msg-undo-btn"
+                    onClick={() => revertToBeforeTurn(msg.id)}
+                    title={tr('ai.revertToTurn')}
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <polyline points="1 4 1 10 7 10" />
+                      <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
+                    </svg>
+                    <span>{tr('ai.revertToTurn')}</span>
+                  </button>
+                )}
               </div>
 
               {/* Thought Block */}
-              {msg.thought && <ThoughtBlock content={msg.thought} />}
+              {msg.thought && <ThoughtBlock content={msg.thought} tr={tr} />}
 
               {/* Tool Call Cards */}
               {msg.toolCalls && msg.toolCalls.length > 0 && (
                 <div className="ai-tool-calls">
                   {msg.toolCalls.map((tc) => (
-                    <ToolCallCard key={tc.id} toolCall={tc} />
+                    <ToolCallCard key={tc.id} toolCall={tc} tr={tr} />
                   ))}
                 </div>
               )}
@@ -444,6 +465,44 @@ export default function AISidebar() {
                   )}
                 </div>
               )}
+
+              {/* Action bar for assistant messages */}
+              {msg.role === 'assistant' && !msg.isStreaming && msg.content && !loading && (
+                <div className="ai-message-actions">
+                  <button
+                    className="ai-action-btn"
+                    onClick={() => {
+                      navigator.clipboard.writeText(msg.content);
+                      setCopiedId(msg.id);
+                      setTimeout(() => setCopiedId(null), 2000);
+                    }}
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                    </svg>
+                    <span>{copiedId === msg.id ? tr('ai.copied') : tr('ai.copyAll')}</span>
+                  </button>
+                  {(() => {
+                    const messages = activeSession?.messages || [];
+                    const idx = messages.findIndex((m) => m.id === msg.id);
+                    const userMsg = idx > 0 ? messages.slice(0, idx).reverse().find((m) => m.role === 'user') : null;
+                    return userMsg ? (
+                      <button
+                        className="ai-action-btn"
+                        onClick={() => retryTurn(userMsg.id)}
+                        disabled={loading}
+                      >
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <polyline points="23 4 23 10 17 10" />
+                          <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+                        </svg>
+                        <span>{tr('ai.retry')}</span>
+                      </button>
+                    ) : null;
+                  })()}
+                </div>
+              )}
             </div>
           );
         })}
@@ -459,7 +518,7 @@ export default function AISidebar() {
         {error && (
           <div className="ai-error">
             <span>{error}</span>
-            <button className="ai-error-dismiss" onClick={() => setError(null)}>Dismiss</button>
+            <button className="ai-error-dismiss" onClick={() => setError(null)}>{tr('ai.dismiss')}</button>
           </div>
         )}
 
@@ -475,7 +534,7 @@ export default function AISidebar() {
               onClick={() => setShowModelPicker(!showModelPicker)}
             >
               <span className="ai-model-select-name">
-                {activeModel?.name || 'Select Model'}
+                {activeModel?.name || tr('ai.selectModel')}
               </span>
               <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <polyline points="6 9 12 15 18 9" />
@@ -488,7 +547,7 @@ export default function AISidebar() {
         {showModelPicker && (
           <div className="ai-model-picker-dropdown">
             <div className="ai-model-picker-header">
-              <span>Select Model</span>
+              <span>{tr('ai.selectModel')}</span>
               <button className="ai-model-picker-close" onClick={() => setShowModelPicker(false)}>
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <line x1="18" y1="6" x2="6" y2="18" />
@@ -499,7 +558,7 @@ export default function AISidebar() {
             <div className="ai-model-list">
               {models.length === 0 && (
                 <div className="ai-model-empty">
-                  No models configured. Click Settings to add one.
+                  {tr('ai.noModels')}
                 </div>
               )}
               {models.map((m) => (
@@ -524,11 +583,11 @@ export default function AISidebar() {
                 <polyline points="4 17 10 11 4 5" />
                 <line x1="12" y1="19" x2="20" y2="19" />
               </svg>
-              <span>Terminal {terminalReference.startLine}-{terminalReference.endLine}</span>
+              <span>{tr('ai.terminalRef')} {terminalReference.startLine}-{terminalReference.endLine}</span>
               <button
                 className="ai-terminal-ref-remove"
                 onClick={clearTerminalReference}
-                title="Remove"
+                title={tr('ai.remove')}
               >
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <line x1="18" y1="6" x2="6" y2="18" />
@@ -543,23 +602,39 @@ export default function AISidebar() {
           <textarea
             ref={inputRef}
             className="ai-input"
-            placeholder={models.length > 0 ? "Ask about terminal output..." : "Configure AI to start chatting..."}
+            placeholder={models.length > 0 ? tr('ai.inputPlaceholder') : tr('ai.inputDisabled')}
             value={inputText}
-            onChange={(e) => setInputText(e.target.value)}
+            onChange={(e) => {
+              setInputText(e.target.value);
+              // Auto-resize
+              const el = e.target;
+              el.style.height = 'auto';
+              el.style.height = Math.min(el.scrollHeight, 160) + 'px';
+            }}
             onKeyDown={handleKeyDown}
             rows={2}
             disabled={loading || models.length === 0}
           />
-          <button
-            className="ai-send-btn"
-            onClick={handleSend}
-            disabled={loading || (!inputText.trim() && !terminalReference) || models.length === 0}
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <line x1="22" y1="2" x2="11" y2="13" />
-              <polygon points="22 2 15 22 11 13 2 9 22 2" />
-            </svg>
-          </button>
+          <div className="ai-input-actions">
+            {loading ? (
+              <button className="ai-stop-btn" onClick={stopGeneration} title={tr('ai.stop')}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                  <rect x="6" y="6" width="12" height="12" rx="2" />
+                </svg>
+              </button>
+            ) : (
+              <button
+                className="ai-send-btn"
+                onClick={handleSend}
+                disabled={(!inputText.trim() && !terminalReference) || models.length === 0}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <line x1="22" y1="2" x2="11" y2="13" />
+                  <polygon points="22 2 15 22 11 13 2 9 22 2" />
+                </svg>
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
@@ -567,17 +642,17 @@ export default function AISidebar() {
       {showSessions && (
         <div className="ai-session-list">
           <div className="ai-session-list-header">
-            <span>Chat History</span>
+            <span>{tr('ai.chatHistoryTitle')}</span>
             <button className="ai-session-new" onClick={handleNewChat}>
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <line x1="12" y1="5" x2="12" y2="19" />
                 <line x1="5" y1="12" x2="19" y2="12" />
               </svg>
-              New
+              {tr('ai.new')}
             </button>
           </div>
           <div className="ai-session-items">
-            {sessions.length === 0 && <div className="ai-session-empty">No chats yet</div>}
+            {sessions.length === 0 && <div className="ai-session-empty">{tr('ai.noChats')}</div>}
             {sessions.map((sess) => {
               const sessModel = models.find((m) => m.id === sess.modelId);
               return (
@@ -589,13 +664,13 @@ export default function AISidebar() {
                   <div className="ai-session-info">
                     <div className="ai-session-title">{sess.title}</div>
                     <div className="ai-session-meta">
-                      {sess.messages.length} msgs · {sessModel?.name ?? 'No model'}
+                      {tf(tr('ai.msgs'), { count: sess.messages.length })} · {sessModel?.name ?? tr('ai.noModel')}
                     </div>
                   </div>
                   <button
                     className="ai-session-delete"
                     onClick={(e) => { e.stopPropagation(); deleteSession(sess.id); }}
-                    title="Delete"
+                    title={tr('ai.delete')}
                   >
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                       <polyline points="3 6 5 6 21 6" />
@@ -614,7 +689,7 @@ export default function AISidebar() {
         <div className="ai-config-overlay" onClick={() => setShowConfig(false)}>
           <div className="ai-config-dialog" onClick={(e) => e.stopPropagation()}>
             <div className="ai-config-header">
-              <span>AI Models</span>
+              <span>{tr('ai.modelsTitle')}</span>
               <button className="ai-config-close" onClick={() => setShowConfig(false)}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <line x1="18" y1="6" x2="6" y2="18" />
@@ -628,7 +703,7 @@ export default function AISidebar() {
               <div className="ai-config-model-list">
                 {models.length === 0 && (
                   <div className="ai-config-no-models">
-                    No models configured yet. Add one below.
+                    {tr('ai.noModelsYet')}
                   </div>
                 )}
                 {models.map((m) => (
@@ -644,7 +719,7 @@ export default function AISidebar() {
                       <button
                         className="ai-config-model-edit"
                         onClick={() => handleEditModel(m)}
-                        title="Edit"
+                        title={tr('ai.edit')}
                       >
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                           <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
@@ -654,7 +729,7 @@ export default function AISidebar() {
                       <button
                         className="ai-config-model-delete"
                         onClick={() => removeModel(m.id)}
-                        title="Delete"
+                        title={tr('ai.delete')}
                       >
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                           <polyline points="3 6 5 6 21 6" />
@@ -669,11 +744,11 @@ export default function AISidebar() {
               {/* Add/Edit model form */}
               <div className="ai-config-model-form">
                 <div className="ai-config-model-form-title">
-                  {editingModelId ? 'Edit Model' : 'Add Model'}
+                  {editingModelId ? tr('ai.editModel') : tr('ai.addModel')}
                 </div>
 
                 <label>
-                  <span>Provider</span>
+                  <span>{tr('ai.provider')}</span>
                   <select
                     value={modelForm.provider}
                     onChange={(e) => handleProviderChange(e.target.value)}
@@ -688,7 +763,7 @@ export default function AISidebar() {
                 </label>
 
                 <label>
-                  <span>API URL</span>
+                  <span>{tr('ai.apiUrl')}</span>
                   <input
                     type="text"
                     value={modelForm.baseUrl}
@@ -698,7 +773,7 @@ export default function AISidebar() {
                 </label>
 
                 <label>
-                  <span>API Key</span>
+                  <span>{tr('ai.apiKey')}</span>
                   <input
                     type="password"
                     value={modelForm.apiKey}
@@ -708,7 +783,7 @@ export default function AISidebar() {
                 </label>
 
                 <label>
-                  <span>Model Name</span>
+                  <span>{tr('ai.modelName')}</span>
                   <input
                     type="text"
                     value={modelForm.name}
@@ -728,7 +803,7 @@ export default function AISidebar() {
                         <svg className="ai-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                           <path d="M21 12a9 9 0 1 1-6.219-8.56" />
                         </svg>
-                        Fetching...
+                        {tr('ai.fetching')}
                       </>
                     ) : (
                       <>
@@ -736,7 +811,7 @@ export default function AISidebar() {
                           <polyline points="23 4 23 10 17 10" />
                           <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
                         </svg>
-                        Fetch Available Models
+                        {tr('ai.fetchModels')}
                       </>
                     )}
                   </button>
@@ -744,7 +819,7 @@ export default function AISidebar() {
 
                 {fetchedModels.length > 0 && (
                   <div className="ai-config-fetched-list">
-                    <span className="ai-config-fetched-label">Available models (click to select):</span>
+                    <span className="ai-config-fetched-label">{tr('ai.availableModels')}</span>
                     <div className="ai-config-fetched-items">
                       {fetchedModels.map((m) => (
                         <button
@@ -766,7 +841,7 @@ export default function AISidebar() {
                 <div className="ai-config-model-form-footer">
                   {editingModelId && (
                     <button className="ai-config-cancel" onClick={handleCancelEdit}>
-                      Cancel
+                      {tr('ai.cancel')}
                     </button>
                   )}
                   <button
@@ -774,7 +849,7 @@ export default function AISidebar() {
                     onClick={handleSaveModel}
                     disabled={!modelForm.name.trim()}
                   >
-                    {editingModelId ? 'Update' : 'Add Model'}
+                    {editingModelId ? tr('ai.update') : tr('ai.addModelBtn')}
                   </button>
                 </div>
               </div>
@@ -794,7 +869,7 @@ export default function AISidebar() {
                 <line x1="12" y1="17" x2="12.01" y2="17" />
               </svg>
             </div>
-            <div className="ai-tool-confirm-title">AI wants to execute commands</div>
+            <div className="ai-tool-confirm-title">{tr('ai.confirmTitle')}</div>
             <div className="ai-tool-confirm-list">
               {pendingToolConfirmation.toolCalls.map((tc) => (
                 <div key={tc.id} className="ai-tool-confirm-item">
@@ -804,20 +879,20 @@ export default function AISidebar() {
               ))}
             </div>
             <div className="ai-tool-confirm-warning">
-              These commands will be executed on the connected server.
+              {tr('ai.confirmWarning')}
             </div>
             <div className="ai-tool-confirm-actions">
               <button
                 className="ai-tool-confirm-deny"
                 onClick={() => confirmToolCalls(false)}
               >
-                Deny
+                {tr('ai.deny')}
               </button>
               <button
                 className="ai-tool-confirm-approve"
                 onClick={() => confirmToolCalls(true)}
               >
-                Approve
+                {tr('ai.approve')}
               </button>
             </div>
           </div>

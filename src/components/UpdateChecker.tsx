@@ -1,7 +1,11 @@
 import { useEffect, useState, useCallback } from 'react';
 import { check } from '@tauri-apps/plugin-updater';
+import { useI18nStore } from '../store/useI18nStore';
+import { t } from '../i18n/translations';
 
 export default function UpdateChecker() {
+  const { lang } = useI18nStore();
+  const tr = (key: string) => t[lang][key] ?? key;
   const [updateAvailable, setUpdateAvailable] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -65,7 +69,7 @@ export default function UpdateChecker() {
           <svg className="ai-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M21 12a9 9 0 1 1-6.219-8.56" />
           </svg>
-          <span>Downloading update... {progress}%</span>
+          <span>{tr('update.downloading')} {progress}%</span>
         </div>
       </div>
     );
@@ -79,9 +83,9 @@ export default function UpdateChecker() {
           <polyline points="7 10 12 15 17 10" />
           <line x1="12" y1="15" x2="12" y2="3" />
         </svg>
-        <span>New version available!</span>
+        <span>{tr('update.newVersion')}</span>
         <button className="update-btn" onClick={handleUpdate}>
-          Update Now
+          {tr('update.updateNow')}
         </button>
         <button className="update-dismiss" onClick={() => setUpdateAvailable(false)}>
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

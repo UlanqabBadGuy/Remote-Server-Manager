@@ -3,6 +3,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useAppStore } from '../store/useAppStore';
 import { useToastStore } from '../store/useToastStore';
+import { useI18nStore } from '../store/useI18nStore';
+import { t } from '../i18n/translations';
 import type { ConnectionConfig, Group } from '../store/useAppStore';
 
 function buildGroupOptions(groups: Group[]): { id: string; label: string }[] {
@@ -56,6 +58,8 @@ function ConnectionDialog({ connection, defaultGroupId, onClose }: ConnectionDia
 
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
+  const { lang } = useI18nStore();
+  const tr = (key: string) => t[lang][key] ?? key;
 
   useEffect(() => {
     loadGroups();
@@ -76,16 +80,16 @@ function ConnectionDialog({ connection, defaultGroupId, onClose }: ConnectionDia
 
   const validate = (): boolean => {
     const newErrors: Record<string, string> = {};
-    if (!formData.name.trim()) newErrors.name = 'Name is required';
-    if (!formData.host.trim()) newErrors.host = 'Host is required';
+    if (!formData.name.trim()) newErrors.name = tr('conn.errNameRequired');
+    if (!formData.host.trim()) newErrors.host = tr('conn.errHostRequired');
     if (!formData.port || formData.port < 1 || formData.port > 65535)
-      newErrors.port = 'Port must be between 1 and 65535';
-    if (!formData.username.trim()) newErrors.username = 'Username is required';
+      newErrors.port = tr('conn.errPortRange');
+    if (!formData.username.trim()) newErrors.username = tr('conn.errUsernameRequired');
     if (formData.auth_type === 'password' && !connection && !formData.password.trim()) {
-      newErrors.password = 'Password is required';
+      newErrors.password = tr('conn.errPasswordRequired');
     }
     if (formData.auth_type === 'keyfile' && !formData.key_path.trim()) {
-      newErrors.key_path = 'Key file is required';
+      newErrors.key_path = tr('conn.errKeyRequired');
     }
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
@@ -136,7 +140,7 @@ function ConnectionDialog({ connection, defaultGroupId, onClose }: ConnectionDia
       onClose();
     } catch (error) {
       console.error('Failed to save connection:', error);
-      addToast('error', `Failed to save connection: ${error}`);
+      addToast('error', `${tr('conn.saveFailed')}: ${error}`);
     } finally {
       setSubmitting(false);
     }
@@ -146,7 +150,7 @@ function ConnectionDialog({ connection, defaultGroupId, onClose }: ConnectionDia
     try {
       const selected = await open({
         multiple: false,
-        title: 'Select SSH Key File',
+        title: tr('conn.selectKeyFile'),
       });
       if (selected) {
         setFormData((prev) => ({ ...prev, key_path: selected as string }));
@@ -171,7 +175,7 @@ function ConnectionDialog({ connection, defaultGroupId, onClose }: ConnectionDia
     <div className="dialog-overlay" onClick={onClose}>
       <div className="dialog" onClick={(e) => e.stopPropagation()}>
         <div className="dialog-header">
-          <h3>{connection ? 'Edit Connection' : 'New Connection'}</h3>
+          <h3>{connection ? tr('conn.titleEdit') : tr('conn.titleNew')}</h3>
           <button className="dialog-close-btn" onClick={onClose}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <line x1="18" y1="6" x2="6" y2="18" />
@@ -182,33 +186,33 @@ function ConnectionDialog({ connection, defaultGroupId, onClose }: ConnectionDia
 
         <form className="dialog-form" onSubmit={handleSubmit}>
           <div className="form-group">
-            <label className="form-label" htmlFor="conn-name">Name</label>
+            <label className="form-label" htmlFor="conn-name">{tr('conn.name')}</label>
             <input
               id="conn-name"
               type="text"
               className={`form-input ${errors.name ? 'error' : ''}`}
               value={formData.name}
               onChange={(e) => updateField('name', e.target.value)}
-              placeholder="My Server"
+              placeholder={tr('conn.namePlaceholder')}
             />
             {errors.name && <span className="form-error">{errors.name}</span>}
           </div>
 
           <div className="form-row">
             <div className="form-group flex-3">
-              <label className="form-label" htmlFor="conn-host">Host</label>
+              <label className="form-label" htmlFor="conn-host">{tr('conn.host')}</label>
               <input
                 id="conn-host"
                 type="text"
                 className={`form-input ${errors.host ? 'error' : ''}`}
                 value={formData.host}
                 onChange={(e) => updateField('host', e.target.value)}
-                placeholder="192.168.1.1"
+                placeholder={tr('conn.hostPlaceholder')}
               />
               {errors.host && <span className="form-error">{errors.host}</span>}
             </div>
             <div className="form-group flex-1">
-              <label className="form-label" htmlFor="conn-port">Port</label>
+              <label className="form-label" htmlFor="conn-port">{tr('conn.port')}</label>
               <input
                 id="conn-port"
                 type="number"
@@ -223,20 +227,20 @@ function ConnectionDialog({ connection, defaultGroupId, onClose }: ConnectionDia
           </div>
 
           <div className="form-group">
-            <label className="form-label" htmlFor="conn-username">Username</label>
+            <label className="form-label" htmlFor="conn-username">{tr('conn.username')}</label>
             <input
               id="conn-username"
               type="text"
               className={`form-input ${errors.username ? 'error' : ''}`}
               value={formData.username}
               onChange={(e) => updateField('username', e.target.value)}
-              placeholder="root"
+              placeholder={tr('conn.usernamePlaceholder')}
             />
             {errors.username && <span className="form-error">{errors.username}</span>}
           </div>
 
           <div className="form-group">
-            <label className="form-label">Authentication</label>
+            <label className="form-label">{tr('conn.auth')}</label>
             <div className="radio-group">
               <label className="radio-label">
                 <input
@@ -246,7 +250,7 @@ function ConnectionDialog({ connection, defaultGroupId, onClose }: ConnectionDia
                   checked={formData.auth_type === 'password'}
                   onChange={() => updateField('auth_type', 'password')}
                 />
-                <span>Password</span>
+                <span>{tr('conn.authPassword')}</span>
               </label>
               <label className="radio-label">
                 <input
@@ -256,27 +260,27 @@ function ConnectionDialog({ connection, defaultGroupId, onClose }: ConnectionDia
                   checked={formData.auth_type === 'keyfile'}
                   onChange={() => updateField('auth_type', 'keyfile')}
                 />
-                <span>Key File</span>
+                <span>{tr('conn.authKeyFile')}</span>
               </label>
             </div>
           </div>
 
           {formData.auth_type === 'password' ? (
             <div className="form-group">
-              <label className="form-label" htmlFor="conn-password">Password</label>
+              <label className="form-label" htmlFor="conn-password">{tr('conn.password')}</label>
               <input
                 id="conn-password"
                 type="password"
                 className={`form-input ${errors.password ? 'error' : ''}`}
                 value={formData.password}
                 onChange={(e) => updateField('password', e.target.value)}
-                placeholder={connection ? 'Leave empty to keep current' : 'Enter password'}
+                placeholder={connection ? tr('conn.passwordKeepPlaceholder') : tr('conn.passwordPlaceholder')}
               />
               {errors.password && <span className="form-error">{errors.password}</span>}
             </div>
           ) : (
             <div className="form-group">
-              <label className="form-label" htmlFor="conn-keypath">Key File Path</label>
+              <label className="form-label" htmlFor="conn-keypath">{tr('conn.keyPath')}</label>
               <div className="file-picker">
                 <input
                   id="conn-keypath"
@@ -284,14 +288,14 @@ function ConnectionDialog({ connection, defaultGroupId, onClose }: ConnectionDia
                   className={`form-input ${errors.key_path ? 'error' : ''}`}
                   value={formData.key_path}
                   onChange={(e) => updateField('key_path', e.target.value)}
-                  placeholder="~/.ssh/id_rsa"
+                  placeholder={tr('conn.keyPathPlaceholder')}
                 />
                 <button
                   type="button"
                   className="browse-btn"
                   onClick={handleKeyFilePick}
                 >
-                  Browse
+                  {tr('conn.browse')}
                 </button>
               </div>
               {errors.key_path && <span className="form-error">{errors.key_path}</span>}
@@ -299,14 +303,14 @@ function ConnectionDialog({ connection, defaultGroupId, onClose }: ConnectionDia
           )}
 
           <div className="form-group">
-            <label className="form-label" htmlFor="conn-group">Group</label>
+            <label className="form-label" htmlFor="conn-group">{tr('conn.group')}</label>
             <select
               id="conn-group"
               className="form-input"
               value={formData.group_id}
               onChange={(e) => updateField('group_id', e.target.value)}
             >
-              <option value="">No Group</option>
+              <option value="">{tr('conn.noGroup')}</option>
               {buildGroupOptions(groups).map((opt) => (
                 <option key={opt.id} value={opt.id}>
                   {opt.label}
@@ -316,13 +320,13 @@ function ConnectionDialog({ connection, defaultGroupId, onClose }: ConnectionDia
           </div>
 
           <div className="form-group">
-            <label className="form-label" htmlFor="conn-note">Note</label>
+            <label className="form-label" htmlFor="conn-note">{tr('conn.note')}</label>
             <textarea
               id="conn-note"
               className="form-input form-textarea"
               value={formData.note}
               onChange={(e) => updateField('note', e.target.value)}
-              placeholder="Optional notes about this connection..."
+              placeholder={tr('conn.notePlaceholder')}
               rows={3}
             />
           </div>
@@ -333,10 +337,10 @@ function ConnectionDialog({ connection, defaultGroupId, onClose }: ConnectionDia
 
           <div className="dialog-footer">
             <button type="button" className="dialog-btn cancel" onClick={onClose}>
-              Cancel
+              {tr('conn.cancel')}
             </button>
             <button type="submit" className="dialog-btn primary" disabled={submitting}>
-              {submitting ? 'Saving...' : connection ? 'Update' : 'Create'}
+              {submitting ? tr('conn.saving') : connection ? tr('conn.update') : tr('conn.create')}
             </button>
           </div>
         </form>

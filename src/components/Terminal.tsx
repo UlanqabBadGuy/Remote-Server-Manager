@@ -25,8 +25,10 @@ export default function Terminal({ connectionId, connectionName }: TerminalProps
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [selectedText, setSelectedText] = useState('');
   const [selectionPos, setSelectionPos] = useState({ x: 0, y: 0 });
+  const [selectionRange, setSelectionRange] = useState({ startLine: 1, endLine: 1 });
 
   const addTerminalOutput = useAIStore((s) => s.addTerminalOutput);
+  const setActiveSshSession = useAIStore((s) => s.setActiveSshSession);
 
   const tabId = useAppStore((s) => {
     const tab = s.tabs.find(
@@ -83,12 +85,16 @@ export default function Terminal({ connectionId, connectionName }: TerminalProps
     // Selection handler for AI integration
     const onSelectionChange = () => {
       const text = term.getSelection();
-      if (text) {
-        const viewport = terminalRef.current?.querySelector('.xterm-viewport');
-        if (viewport) {
-          const rect = viewport.getBoundingClientRect();
-          setSelectionPos({ x: rect.right - 40, y: rect.top + 10 });
+      if (text && terminalRef.current) {
+        const pos = term.getSelectionPosition();
+        if (pos) {
+          setSelectionRange({ startLine: pos.start.y + 1, endLine: pos.end.y + 1 });
         }
+        const containerRect = terminalRef.current.getBoundingClientRect();
+        setSelectionPos({
+          x: containerRect.width - 50,
+          y: 10,
+        });
         setSelectedText(text);
       } else {
         setSelectedText('');
@@ -112,6 +118,7 @@ export default function Terminal({ connectionId, connectionName }: TerminalProps
         }
         sessionId = sid;
         setSessionId(tabId, sid);
+        setActiveSshSession(sid);
         setStatus('connected');
       } catch (err) {
         if (cancelled) return;
@@ -223,6 +230,7 @@ export default function Terminal({ connectionId, connectionName }: TerminalProps
 
     return () => {
       cancelled = true;
+      setActiveSshSession(null);
       onDataDisposable.dispose();
       onKeyDisposable.dispose();
       resizeObserver.disconnect();
@@ -277,7 +285,7 @@ export default function Terminal({ connectionId, connectionName }: TerminalProps
           className="terminal-ai-btn"
           style={{ left: selectionPos.x, top: selectionPos.y }}
           onClick={() => {
-            addTerminalOutput(selectedText);
+            addTerminalOutput(selectedText, selectionRange.startLine, selectionRange.endLine);
             setSelectedText('');
           }}
           title="Send to AI Assistant"

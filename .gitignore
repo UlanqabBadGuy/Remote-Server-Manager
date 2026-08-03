@@ -28,6 +28,9 @@ rustup-init.sh
 *.key
 *.pem
 credentials.json
+*.sig
+.updater-key
+~/.tauri/
 
 # OS files
 .DS_Store

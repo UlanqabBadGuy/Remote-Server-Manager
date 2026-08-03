@@ -1,8 +1,115 @@
 import { useState, useRef, useEffect } from 'react';
-import { useAIStore, type ModelConfig } from '../store/useAIStore';
+import { useAIStore, type ModelConfig, type ToolCall } from '../store/useAIStore';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 
 function formatTime(ts: number): string {
   return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+// Thought Block Component (collapsible)
+function ThoughtBlock({ content }: { content: string }) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div className="ai-thought-block">
+      <button
+        className="ai-thought-toggle"
+        onClick={() => setExpanded(!expanded)}
+      >
+        <svg
+          width="12"
+          height="12"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          className={`ai-thought-arrow ${expanded ? 'expanded' : ''}`}
+        >
+          <polyline points="9 18 15 12 9 6" />
+        </svg>
+        <span>Thought</span>
+      </button>
+      {expanded && (
+        <div className="ai-thought-content">
+          <pre>{content}</pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Tool Call Card Component
+function ToolCallCard({ toolCall }: { toolCall: ToolCall }) {
+  const [expanded, setExpanded] = useState(false);
+
+  const getStatusIcon = () => {
+    if (toolCall.status === 'pending') {
+      return (
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="ai-spin">
+          <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+        </svg>
+      );
+    }
+    if (toolCall.status === 'success') {
+      return (
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#4caf50" strokeWidth="2">
+          <polyline points="20 6 9 17 4 12" />
+        </svg>
+      );
+    }
+    return (
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#f44336" strokeWidth="2">
+        <line x1="18" y1="6" x2="6" y2="18" />
+        <line x1="6" y1="6" x2="18" y2="18" />
+      </svg>
+    );
+  };
+
+  const getStatusText = () => {
+    if (toolCall.status === 'pending') return 'Running...';
+    if (toolCall.status === 'success') return 'Completed';
+    return 'Failed';
+  };
+
+  return (
+    <div className="ai-tool-call-card">
+      <div className="ai-tool-call-header" onClick={() => setExpanded(!expanded)}>
+        <div className="ai-tool-call-info">
+          {getStatusIcon()}
+          <span className="ai-tool-call-name">{toolCall.name}</span>
+          <span className="ai-tool-call-status">{getStatusText()}</span>
+        </div>
+        <svg
+          width="12"
+          height="12"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          className={`ai-tool-call-arrow ${expanded ? 'expanded' : ''}`}
+        >
+          <polyline points="9 18 15 12 9 6" />
+        </svg>
+      </div>
+      {expanded && (
+        <div className="ai-tool-call-details">
+          <div className="ai-tool-call-args">
+            <div className="ai-tool-call-label">Arguments:</div>
+            <pre>{toolCall.arguments}</pre>
+          </div>
+          {toolCall.result && (
+            <div className="ai-tool-call-result">
+              <div className="ai-tool-call-label">Result:</div>
+              <pre>{toolCall.result}</pre>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 const PROVIDER_DEFAULTS: Record<string, { baseUrl: string; placeholder: string; hint: string }> = {
@@ -36,12 +143,14 @@ const PROVIDER_DEFAULTS: Record<string, { baseUrl: string; placeholder: string; 
 export default function AISidebar() {
   const {
     visible, sessions, activeSessionId, models,
-    inputText, loading, error,
+    inputText, loading, error, terminalReference,
+    pendingToolConfirmation,
     setVisible, addModel, updateModel, removeModel,
     fetchModelsForProvider,
     createSession, switchSession, deleteSession,
     updateSessionModel,
-    setInputText, sendMessage, setError,
+    setInputText, sendMessage, setError, clearTerminalReference,
+    confirmToolCalls,
   } = useAIStore();
 
   const [showConfig, setShowConfig] = useState(false);
@@ -80,12 +189,11 @@ export default function AISidebar() {
   }, [visible, activeSessionId]);
 
   const handleSend = () => {
-    const text = inputText.trim();
-    if (!text || loading) return;
+    if (loading) return;
+    if (!inputText.trim() && !terminalReference) return;
     if (!activeSessionId) {
       createSession();
       setTimeout(() => {
-        setInputText(text);
         sendMessage();
       }, 50);
       return;
@@ -112,7 +220,7 @@ export default function AISidebar() {
 
   const handleFetchModels = async () => {
     if (!modelForm.apiKey) {
-      set({ error: 'Please enter API Key first' });
+      setError('Please enter API Key first');
       return;
     }
     setFetchingModels(true);
@@ -193,7 +301,7 @@ export default function AISidebar() {
   if (!visible) return null;
 
   return (
-    <div className="ai-sidebar">
+    <div className="ai-sidebar" data-tour="ai-sidebar">
       {/* Header */}
       <div className="ai-sidebar-header">
         <div className="ai-sidebar-title">
@@ -251,18 +359,94 @@ export default function AISidebar() {
           </div>
         )}
 
-        {activeSession?.messages.map((msg) => (
-          <div key={msg.id} className={`ai-message ${msg.role}`}>
-            <div className="ai-message-header">
-              <span className="ai-message-role">{msg.role === 'user' ? 'You' : 'AI'}</span>
-              {msg.model && <span className="ai-message-model">{msg.model}</span>}
-              <span className="ai-message-time">{formatTime(msg.timestamp)}</span>
+        {activeSession?.messages.map((msg) => {
+          // Skip tool messages (they're shown as part of tool call cards)
+          if (msg.role === 'tool') return null;
+
+          return (
+            <div key={msg.id} className={`ai-message ${msg.role}`}>
+              <div className="ai-message-header">
+                <span className="ai-message-role">{msg.role === 'user' ? 'You' : 'AI'}</span>
+                {msg.model && <span className="ai-message-model">{msg.model}</span>}
+                <span className="ai-message-time">{formatTime(msg.timestamp)}</span>
+              </div>
+
+              {/* Thought Block */}
+              {msg.thought && <ThoughtBlock content={msg.thought} />}
+
+              {/* Tool Call Cards */}
+              {msg.toolCalls && msg.toolCalls.length > 0 && (
+                <div className="ai-tool-calls">
+                  {msg.toolCalls.map((tc) => (
+                    <ToolCallCard key={tc.id} toolCall={tc} />
+                  ))}
+                </div>
+              )}
+
+              {/* Message Content */}
+              {msg.content && (
+                <div className="ai-message-content">
+                  {msg.role === 'user' ? (
+                    <pre>{msg.content}</pre>
+                  ) : msg.isStreaming ? (
+                    <div className="ai-markdown-streaming">
+                      <ReactMarkdown
+                        remarkPlugins={[remarkGfm]}
+                        components={{
+                          code({ node, className, children, ...props }) {
+                            const match = /language-(\w+)/.exec(className || '');
+                            const codeStr = String(children).replace(/\n$/, '');
+                            return match ? (
+                              <SyntaxHighlighter
+                                style={oneDark}
+                                language={match[1]}
+                                PreTag="div"
+                              >
+                                {codeStr}
+                              </SyntaxHighlighter>
+                            ) : (
+                              <code className={className} {...props}>
+                                {children}
+                              </code>
+                            );
+                          },
+                        }}
+                      >
+                        {msg.content}
+                      </ReactMarkdown>
+                      <span className="ai-cursor" />
+                    </div>
+                  ) : (
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
+                      components={{
+                        code({ node, className, children, ...props }) {
+                          const match = /language-(\w+)/.exec(className || '');
+                          const codeStr = String(children).replace(/\n$/, '');
+                          return match ? (
+                            <SyntaxHighlighter
+                              style={oneDark}
+                              language={match[1]}
+                              PreTag="div"
+                            >
+                              {codeStr}
+                            </SyntaxHighlighter>
+                          ) : (
+                            <code className={className} {...props}>
+                              {children}
+                            </code>
+                          );
+                        },
+                      }}
+                    >
+                      {msg.content}
+                    </ReactMarkdown>
+                  )}
+                </div>
+              )}
             </div>
-            <div className="ai-message-content">
-              <pre>{msg.content}</pre>
-            </div>
-          </div>
-        ))}
+          );
+        })}
 
         {loading && (
           <div className="ai-message assistant">
@@ -332,6 +516,29 @@ export default function AISidebar() {
           </div>
         )}
 
+        {/* Terminal Reference Tag */}
+        {terminalReference && (
+          <div className="ai-terminal-ref">
+            <div className="ai-terminal-ref-tag">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <polyline points="4 17 10 11 4 5" />
+                <line x1="12" y1="19" x2="20" y2="19" />
+              </svg>
+              <span>Terminal {terminalReference.startLine}-{terminalReference.endLine}</span>
+              <button
+                className="ai-terminal-ref-remove"
+                onClick={clearTerminalReference}
+                title="Remove"
+              >
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className="ai-input-area">
           <textarea
             ref={inputRef}
@@ -346,7 +553,7 @@ export default function AISidebar() {
           <button
             className="ai-send-btn"
             onClick={handleSend}
-            disabled={loading || !inputText.trim() || models.length === 0}
+            disabled={loading || (!inputText.trim() && !terminalReference) || models.length === 0}
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <line x1="22" y1="2" x2="11" y2="13" />
@@ -571,6 +778,47 @@ export default function AISidebar() {
                   </button>
                 </div>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Tool Confirmation Dialog */}
+      {pendingToolConfirmation && (
+        <div className="ai-tool-confirm-overlay">
+          <div className="ai-tool-confirm-dialog">
+            <div className="ai-tool-confirm-icon">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#f0a030" strokeWidth="2">
+                <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                <line x1="12" y1="9" x2="12" y2="13" />
+                <line x1="12" y1="17" x2="12.01" y2="17" />
+              </svg>
+            </div>
+            <div className="ai-tool-confirm-title">AI wants to execute commands</div>
+            <div className="ai-tool-confirm-list">
+              {pendingToolConfirmation.toolCalls.map((tc) => (
+                <div key={tc.id} className="ai-tool-confirm-item">
+                  <div className="ai-tool-confirm-cmd-name">{tc.name}</div>
+                  <pre className="ai-tool-confirm-cmd-args">{tc.arguments}</pre>
+                </div>
+              ))}
+            </div>
+            <div className="ai-tool-confirm-warning">
+              These commands will be executed on the connected server.
+            </div>
+            <div className="ai-tool-confirm-actions">
+              <button
+                className="ai-tool-confirm-deny"
+                onClick={() => confirmToolCalls(false)}
+              >
+                Deny
+              </button>
+              <button
+                className="ai-tool-confirm-approve"
+                onClick={() => confirmToolCalls(true)}
+              >
+                Approve
+              </button>
             </div>
           </div>
         </div>

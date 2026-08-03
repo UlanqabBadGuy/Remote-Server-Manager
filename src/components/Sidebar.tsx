@@ -3,6 +3,7 @@ import { open, save } from '@tauri-apps/plugin-dialog';
 import { useAppStore } from '../store/useAppStore';
 import { useAIStore } from '../store/useAIStore';
 import { useToastStore } from '../store/useToastStore';
+import { resetTour } from './TourGuide';
 import type { ConnectionConfig, Group } from '../store/useAppStore';
 
 interface SidebarProps {
@@ -180,7 +181,7 @@ function Sidebar({ onNewConnection, onNewConnectionInGroup, onEditConnection, on
   } = useAppStore();
 
   const { addToast } = useToastStore();
-  const { visible: aiVisible, toggleVisible: toggleAI } = useAIStore();
+  const { toggleVisible: toggleAI } = useAIStore();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
@@ -420,7 +421,7 @@ function Sidebar({ onNewConnection, onNewConnectionInGroup, onEditConnection, on
   }, [groups]);
 
   return (
-    <div className="sidebar">
+    <div className="sidebar" data-tour="sidebar">
       <div className="sidebar-header">
         <h2 className="sidebar-title">SSH Manager</h2>
         <div className="sidebar-header-actions">
@@ -428,6 +429,7 @@ function Sidebar({ onNewConnection, onNewConnectionInGroup, onEditConnection, on
             className="icon-btn"
             onClick={toggleAI}
             title="Toggle AI Assistant"
+            data-tour="ai-toggle"
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M12 2L2 7l10 5 10-5-10-5z" />
@@ -458,6 +460,17 @@ function Sidebar({ onNewConnection, onNewConnectionInGroup, onEditConnection, on
               </svg>
             )}
           </button>
+          <button
+            className="icon-btn"
+            onClick={resetTour}
+            title="Start guided tour"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="12" cy="12" r="10" />
+              <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
+              <line x1="12" y1="17" x2="12.01" y2="17" />
+            </svg>
+          </button>
         </div>
       </div>
 
@@ -476,14 +489,14 @@ function Sidebar({ onNewConnection, onNewConnectionInGroup, onEditConnection, on
       </div>
 
       <div className="sidebar-actions">
-        <button className="sidebar-btn primary" onClick={onNewConnection}>
+        <button className="sidebar-btn primary" onClick={onNewConnection} data-tour="new-connection">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <line x1="12" y1="5" x2="12" y2="19" />
             <line x1="5" y1="12" x2="19" y2="12" />
           </svg>
           New Connection
         </button>
-        <button className="sidebar-btn" onClick={onQuickConnect}>
+        <button className="sidebar-btn" onClick={onQuickConnect} data-tour="quick-connect">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <polyline points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
           </svg>
@@ -491,7 +504,7 @@ function Sidebar({ onNewConnection, onNewConnectionInGroup, onEditConnection, on
         </button>
       </div>
 
-      <div className="sidebar-tree">
+      <div className="sidebar-tree" data-tour="sidebar-tree">
         {/* Root-level groups */}
         {treeNodes.map((node) => (
           <GroupNodeItem
@@ -540,7 +553,7 @@ function Sidebar({ onNewConnection, onNewConnectionInGroup, onEditConnection, on
         )}
       </div>
 
-      <div className="sidebar-footer">
+      <div className="sidebar-footer" data-tour="import-export">
         <button className="sidebar-btn footer-btn" onClick={handleAddRootGroup} title="Add new group">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />

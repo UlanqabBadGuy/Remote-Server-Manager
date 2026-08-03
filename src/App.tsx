@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useAppStore } from './store/useAppStore';
 import { useAIStore } from './store/useAIStore';
 import Sidebar from './components/Sidebar';
@@ -6,6 +6,8 @@ import TabBar from './components/TabBar';
 import Terminal from './components/Terminal';
 import FileBrowser from './components/FileBrowser';
 import AISidebar from './components/AISidebar';
+import TourGuide from './components/TourGuide';
+import UpdateChecker from './components/UpdateChecker';
 import Welcome from './components/Welcome';
 import ConnectionDialog from './components/ConnectionDialog';
 import QuickConnect from './components/QuickConnect';
@@ -13,12 +15,45 @@ import Toast from './components/Toast';
 import type { ConnectionConfig } from './store/useAppStore';
 import './App.css';
 
+const SIDEBAR_MIN = 200;
+const SIDEBAR_MAX = 500;
+const AI_MIN = 280;
+const AI_MAX = 700;
+const SIDEBAR_DEFAULT = 280;
+const AI_DEFAULT = 360;
+
+function loadPanelWidths(): { left: number; right: number } {
+  try {
+    const saved = localStorage.getItem('ssh-manager-panel-widths');
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      return {
+        left: Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, parsed.left ?? SIDEBAR_DEFAULT)),
+        right: Math.max(AI_MIN, Math.min(AI_MAX, parsed.right ?? AI_DEFAULT)),
+      };
+    }
+  } catch {}
+  return { left: SIDEBAR_DEFAULT, right: AI_DEFAULT };
+}
+
+function savePanelWidths(left: number, right: number) {
+  localStorage.setItem('ssh-manager-panel-widths', JSON.stringify({ left, right }));
+}
+
 function App() {
   const { tabs, activeTabId, theme } = useAppStore();
+  const { visible: aiVisible } = useAIStore();
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [editingConnection, setEditingConnection] = useState<ConnectionConfig | null>(null);
   const [showQuickConnect, setShowQuickConnect] = useState(false);
   const [defaultGroupId, setDefaultGroupId] = useState<string | null>(null);
+
+  const initialWidths = loadPanelWidths();
+  const [leftWidth, setLeftWidth] = useState(initialWidths.left);
+  const [rightWidth, setRightWidth] = useState(initialWidths.right);
+  const [dragging, setDragging] = useState<'left' | 'right' | null>(null);
+  const startXRef = useRef(0);
+  const startWidthRef = useRef(0);
 
   useEffect(() => {
     if (theme === 'dark') {
@@ -27,6 +62,55 @@ function App() {
       document.documentElement.classList.remove('dark');
     }
   }, [theme]);
+
+  const handleMouseDown = useCallback((side: 'left' | 'right', e: React.MouseEvent) => {
+    e.preventDefault();
+    setDragging(side);
+    startXRef.current = e.clientX;
+    startWidthRef.current = side === 'left' ? leftWidth : rightWidth;
+  }, [leftWidth, rightWidth]);
+
+  useEffect(() => {
+    if (!dragging) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const delta = dragging === 'left'
+        ? e.clientX - startXRef.current
+        : startXRef.current - e.clientX;
+
+      const newWidth = startWidthRef.current + delta;
+
+      if (dragging === 'left') {
+        const clamped = Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, newWidth));
+        setLeftWidth(clamped);
+      } else {
+        const clamped = Math.max(AI_MIN, Math.min(AI_MAX, newWidth));
+        setRightWidth(clamped);
+      }
+    };
+
+    const handleMouseUp = () => {
+      setDragging((prev) => {
+        if (prev === 'left') {
+          savePanelWidths(leftWidth, rightWidth);
+        } else if (prev === 'right') {
+          savePanelWidths(leftWidth, rightWidth);
+        }
+        return null;
+      });
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [dragging, leftWidth, rightWidth]);
+
+  useEffect(() => {
+    savePanelWidths(leftWidth, rightWidth);
+  }, [leftWidth, rightWidth]);
 
   const activeTab = tabs.find((t) => t.id === activeTabId);
 
@@ -53,16 +137,26 @@ function App() {
   };
 
   return (
-    <div className={`app ${theme}`}>
-      <Sidebar
-        onNewConnection={handleNewConnection}
-        onNewConnectionInGroup={handleNewConnectionInGroup}
-        onEditConnection={handleEditConnection}
-        onQuickConnect={() => setShowQuickConnect(true)}
-      />
+    <div className={`app ${theme} ${dragging ? 'app-dragging' : ''}`}>
+      <div style={{ width: `${leftWidth}px`, minWidth: `${leftWidth}px`, flexShrink: 0 }}>
+        <Sidebar
+          onNewConnection={handleNewConnection}
+          onNewConnectionInGroup={handleNewConnectionInGroup}
+          onEditConnection={handleEditConnection}
+          onQuickConnect={() => setShowQuickConnect(true)}
+        />
+      </div>
+
+      <div
+        className="resize-handle"
+        onMouseDown={(e) => handleMouseDown('left', e)}
+      >
+        <div className="resize-handle-bar" />
+      </div>
+
       <div className="main-content">
         <TabBar />
-        <div className="content-area">
+        <div className="content-area" data-tour="terminal-area">
           {activeTab ? (
             activeTab.type === 'terminal' ? (
               <Terminal
@@ -97,7 +191,20 @@ function App() {
           )}
         </div>
       </div>
-      <AISidebar />
+
+      {aiVisible && (
+        <>
+          <div
+            className="resize-handle"
+            onMouseDown={(e) => handleMouseDown('right', e)}
+          >
+            <div className="resize-handle-bar" />
+          </div>
+          <div style={{ width: `${rightWidth}px`, minWidth: `${rightWidth}px`, flexShrink: 0 }}>
+            <AISidebar />
+          </div>
+        </>
+      )}
 
       {showAddDialog && (
         <ConnectionDialog
@@ -112,6 +219,8 @@ function App() {
       )}
 
       <Toast />
+      <TourGuide />
+      <UpdateChecker />
     </div>
   );
 }

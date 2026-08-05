@@ -7,6 +7,7 @@ import { listen } from '@tauri-apps/api/event';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import { useAppStore } from '../store/useAppStore';
 import { useAIStore } from '../store/useAIStore';
+import { getTerminalTheme } from '../themes/terminal';
 import 'xterm/css/xterm.css';
 
 interface TerminalProps {
@@ -38,6 +39,7 @@ export default function Terminal({ connectionId, connectionName }: TerminalProps
   });
 
   const setSessionId = useAppStore((s) => s.setSessionId);
+  const terminalTheme = useAppStore((s) => s.terminalTheme);
 
   const handleDisconnect = useCallback(async (sessionId: string) => {
     try {
@@ -55,11 +57,7 @@ export default function Terminal({ connectionId, connectionName }: TerminalProps
       fontSize: 14,
       fontFamily:
         "'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Menlo', 'Consolas', monospace",
-      theme: {
-        background: '#1e1e2e',
-        foreground: '#e0e0e0',
-        cursor: '#4fc3f7',
-      },
+      theme: getTerminalTheme(terminalTheme),
       allowProposedApi: true,
     });
 
@@ -250,6 +248,13 @@ export default function Terminal({ connectionId, connectionName }: TerminalProps
       fitAddonRef.current = null;
     };
   }, [connectionId, tabId, setSessionId, handleDisconnect]);
+
+  // Update terminal theme dynamically
+  useEffect(() => {
+    if (xtermRef.current) {
+      xtermRef.current.options.theme = getTerminalTheme(terminalTheme);
+    }
+  }, [terminalTheme]);
 
   return (
     <div className="terminal-container">

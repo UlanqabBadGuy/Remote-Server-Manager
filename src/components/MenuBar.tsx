@@ -1,20 +1,29 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { check } from '@tauri-apps/plugin-updater';
 import { open } from '@tauri-apps/plugin-shell';
 import { appDataDir } from '@tauri-apps/api/path';
+import { getVersion } from '@tauri-apps/api/app';
 import { useI18nStore } from '../store/useI18nStore';
+import { useAppStore } from '../store/useAppStore';
 import { t } from '../i18n/translations';
+import { terminalThemes } from '../themes/terminal';
 
 type MenuName = 'app' | 'help' | 'settings';
 
 export default function MenuBar() {
   const { lang, setLang } = useI18nStore();
+  const { terminalTheme, setTerminalTheme } = useAppStore();
   const tr = (key: string) => t[lang][key] ?? key;
 
   const [activeMenu, setActiveMenu] = useState<MenuName | null>(null);
   const [showAbout, setShowAbout] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<string | null>(null);
+  const [appVersion, setAppVersion] = useState('0.0.0');
+
+  useEffect(() => {
+    getVersion().then(setAppVersion).catch(() => setAppVersion('0.0.0'));
+  }, []);
 
   const handleMenuClick = (menu: MenuName) => {
     setActiveMenu((prev) => (prev === menu ? null : menu));
@@ -187,16 +196,12 @@ export default function MenuBar() {
             </div>
             <div className="about-body">
               <div className="about-logo">
-                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                  <path d="M12 2L2 7l10 5 10-5-10-5z" />
-                  <path d="M2 17l10 5 10-5" />
-                  <path d="M2 12l10 5 10-5" />
-                </svg>
+                <img src="/icon.png" alt="App Icon" width="48" height="48" />
               </div>
               <div className="about-info">
                 <div className="about-row">
                   <span className="about-label">{tr('about.version')}</span>
-                  <span className="about-value">0.1.0</span>
+                  <span className="about-value">{appVersion}</span>
                 </div>
                 <div className="about-row">
                   <span className="about-label">{tr('about.build')}</span>
@@ -249,6 +254,26 @@ export default function MenuBar() {
                     >
                       {tr('settings.langEn')}
                     </button>
+                  </div>
+                </div>
+                <div className="about-row settings-theme-row">
+                  <span className="about-label">{tr('settings.terminalTheme')}</span>
+                  <div className="settings-theme-grid">
+                    {terminalThemes.map((t) => (
+                      <button
+                        key={t.id}
+                        className={`settings-theme-btn ${terminalTheme === t.id ? 'active' : ''}`}
+                        onClick={() => setTerminalTheme(t.id)}
+                      >
+                        <span
+                          className="settings-theme-preview"
+                          style={{
+                            background: `linear-gradient(135deg, ${t.theme.background} 60%, ${t.theme.foreground} 60%, ${t.theme.foreground} 62%, ${t.theme.cursor} 62%)`,
+                          }}
+                        />
+                        <span className="settings-theme-name">{t.name}</span>
+                      </button>
+                    ))}
                   </div>
                 </div>
               </div>

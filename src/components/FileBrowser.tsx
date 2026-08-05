@@ -550,6 +550,7 @@ function FileBrowser({ connectionId, sessionId: initialSessionId }: FileBrowserP
                 onToggle={handleTreeToggle}
                 onNavigate={handleTreeNavigate}
                 currentPath={currentPath}
+                tr={tr}
               />
             ))}
           </div>
@@ -727,6 +728,7 @@ function TreeNodeItem({
   onToggle,
   onNavigate,
   currentPath,
+  tr,
 }: {
   node: TreeNode;
   depth: number;
@@ -734,6 +736,7 @@ function TreeNodeItem({
   onToggle: (node: TreeNode) => void;
   onNavigate: (path: string) => void;
   currentPath: string;
+  tr: (key: string) => string;
 }) {
   const isExpanded = expanded.has(node.path);
   const isCurrent = currentPath === node.path;
@@ -785,6 +788,7 @@ function TreeNodeItem({
               onToggle={onToggle}
               onNavigate={onNavigate}
               currentPath={currentPath}
+              tr={tr}
             />
           ))}
         </div>

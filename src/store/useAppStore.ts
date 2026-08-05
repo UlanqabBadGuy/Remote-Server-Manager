@@ -36,6 +36,7 @@ export interface AppState {
   tabs: Tab[];
   activeTabId: string | null;
   theme: 'light' | 'dark';
+  terminalTheme: string;
   loading: boolean;
 
   loadConnections: () => Promise<void>;
@@ -54,6 +55,7 @@ export interface AppState {
   closeTab: (tabId: string) => void;
   setActiveTab: (tabId: string) => void;
   toggleTheme: () => void;
+  setTerminalTheme: (id: string) => void;
   setSessionId: (tabId: string, sessionId: string) => void;
 }
 
@@ -67,6 +69,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   tabs: [],
   activeTabId: null,
   theme: (localStorage.getItem('ssh-manager-theme') as 'light' | 'dark') || 'light',
+  terminalTheme: localStorage.getItem('ssh-manager-terminal-theme') || 'tokyo-night',
   loading: false,
 
   loadConnections: async () => {
@@ -267,6 +270,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
       return { theme: newTheme };
     });
+  },
+
+  setTerminalTheme: (id) => {
+    localStorage.setItem('ssh-manager-terminal-theme', id);
+    set({ terminalTheme: id });
   },
 
   setSessionId: (tabId, sessionId) => {

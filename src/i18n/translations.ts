@@ -23,6 +23,7 @@ export const t: Record<Lang, Record<string, string>> = {
     'settings.langZh': '简体中文',
     'settings.langEn': 'English',
     'settings.close': '关闭',
+    'settings.terminalTheme': '终端主题',
     // Update
     'update.checking': '正在检查更新...',
     'update.available': '发现新版本，正在下载...',
@@ -279,6 +280,7 @@ export const t: Record<Lang, Record<string, string>> = {
     'settings.langZh': '简体中文',
     'settings.langEn': 'English',
     'settings.close': 'Close',
+    'settings.terminalTheme': 'Terminal Theme',
     // Update
     'update.checking': 'Checking for updates...',
     'update.available': 'Update available! Downloading...',

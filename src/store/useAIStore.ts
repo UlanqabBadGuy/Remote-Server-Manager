@@ -124,31 +124,93 @@ const ANTHROPIC_TOOLS = [
   },
 ];
 
-// ===== SSE Streaming Helpers =====
-async function* readSSELines(response: Response): AsyncGenerator<string> {
-  const reader = response.body?.getReader();
-  if (!reader) return;
-  const decoder = new TextDecoder();
+// ===== HTTP Proxy Helpers (bypass CORS via Rust backend) =====
+
+async function proxyFetch(url: string, method: string, headers: Record<string, string>, body?: string): Promise<string> {
+  return await invoke('proxy_fetch', {
+    request: { url, method, headers, body: body ?? null },
+  });
+}
+
+async function* proxyFetchSSE(
+  url: string,
+  method: string,
+  headers: Record<string, string>,
+  body?: string,
+): AsyncGenerator<string> {
+  const streamId = crypto.randomUUID();
+  let unlistenData: UnlistenFn | null = null;
+  let unlistenDone: UnlistenFn | null = null;
+  let unlistenError: UnlistenFn | null = null;
+
+  const chunks: string[] = [];
+  let done = false;
+  let error: string | null = null;
+  let resolveNext: (() => void) | null = null;
+
+  unlistenData = await listen<string>(`proxy-stream-data-${streamId}`, (event) => {
+    chunks.push(event.payload);
+    resolveNext?.();
+  });
+
+  unlistenDone = await listen<string>(`proxy-stream-done-${streamId}`, () => {
+    done = true;
+    resolveNext?.();
+  });
+
+  unlistenError = await listen<string>(`proxy-stream-error-${streamId}`, (event) => {
+    error = event.payload;
+    done = true;
+    resolveNext?.();
+  });
+
+  // Start the stream request
+  invoke('proxy_fetch_stream', {
+    request: { url, method, headers, body: body ?? null },
+    streamId,
+  }).catch((e) => {
+    error = String(e);
+    done = true;
+    resolveNext?.();
+  });
+
   let buffer = '';
+  let chunkIndex = 0;
+
   try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (trimmed.startsWith('data: ')) {
-          const data = trimmed.slice(6).trim();
-          if (data && data !== '[DONE]') {
-            yield data;
+    while (!done) {
+      // Wait for new chunks
+      if (chunkIndex >= chunks.length) {
+        await new Promise<void>((resolve) => { resolveNext = resolve; });
+      }
+
+      // Process new chunks
+      while (chunkIndex < chunks.length) {
+        buffer += chunks[chunkIndex];
+        chunkIndex++;
+
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (trimmed.startsWith('data: ')) {
+            const data = trimmed.slice(6).trim();
+            if (data && data !== '[DONE]') {
+              yield data;
+            }
           }
         }
       }
     }
+
+    if (error) {
+      throw new Error(error);
+    }
   } finally {
-    reader.releaseLock();
+    unlistenData?.();
+    unlistenDone?.();
+    unlistenError?.();
   }
 }
 
@@ -160,8 +222,8 @@ interface StreamChunk {
   toolCallArgs?: string;
 }
 
-async function* processOpenAIStream(response: Response): AsyncGenerator<StreamChunk> {
-  for await (const raw of readSSELines(response)) {
+async function* processOpenAIStream(url: string, headers: Record<string, string>, body: string): AsyncGenerator<StreamChunk> {
+  for await (const raw of proxyFetchSSE(url, 'POST', headers, body)) {
     try {
       const data = JSON.parse(raw);
       const delta = data.choices?.[0]?.delta;
@@ -188,8 +250,8 @@ async function* processOpenAIStream(response: Response): AsyncGenerator<StreamCh
   yield { type: 'done' };
 }
 
-async function* processAnthropicStream(response: Response): AsyncGenerator<StreamChunk> {
-  for await (const raw of readSSELines(response)) {
+async function* processAnthropicStream(url: string, headers: Record<string, string>, body: string): AsyncGenerator<StreamChunk> {
+  for await (const raw of proxyFetchSSE(url, 'POST', headers, body)) {
     try {
       const data = JSON.parse(raw);
       if (data.type === 'content_block_delta') {
@@ -392,25 +454,25 @@ export const useAIStore = create<AIState>((set, get) => {
         let models: string[] = [];
         if (provider === 'anthropic') {
           const url = baseUrl.replace('/v1/messages', '/v1/models');
-          const response = await fetch(url, {
-            headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+          const text = await proxyFetch(url, 'GET', {
+            'x-api-key': apiKey,
+            'anthropic-version': '2023-06-01',
+            'content-type': 'application/json',
           });
-          if (!response.ok) throw new Error(`API ${response.status}`);
-          const data = await response.json();
+          const data = JSON.parse(text);
           models = (data.data ?? []).map((m: any) => m.id).filter(Boolean);
         } else if (provider === 'google') {
           const url = `${baseUrl}?key=${apiKey}`;
-          const response = await fetch(url);
-          if (!response.ok) throw new Error(`API ${response.status}`);
-          const data = await response.json();
+          const text = await proxyFetch(url, 'GET', {});
+          const data = JSON.parse(text);
           models = (data.models ?? [])
             .filter((m: any) => m.supportedGenerationMethods?.includes('generateContent'))
             .map((m: any) => m.name.replace('models/', ''));
         } else {
+          // OpenAI-compatible (openai, deepseek, bailian, custom)
           const url = baseUrl.replace('/chat/completions', '/models');
-          const response = await fetch(url, { headers: { Authorization: `Bearer ${apiKey}` } });
-          if (!response.ok) throw new Error(`API ${response.status}`);
-          const data = await response.json();
+          const text = await proxyFetch(url, 'GET', { Authorization: `Bearer ${apiKey}` });
+          const data = JSON.parse(text);
           models = (data.data ?? []).map((m: any) => m.id).filter(Boolean);
         }
         models = models.filter((m) => {
@@ -665,17 +727,12 @@ export const useAIStore = create<AIState>((set, get) => {
             headers['Authorization'] = `Bearer ${model.apiKey}`;
           }
 
-          const response = await fetch(model.baseUrl, { method: 'POST', headers, body: JSON.stringify(requestBody), signal: abortController.signal });
+          const body = JSON.stringify(requestBody);
 
-          if (!response.ok) {
-            const errText = await response.text().catch(() => '');
-            throw new Error(`API error ${response.status}: ${errText}`);
-          }
-
-          // Process stream
+          // Process stream via Rust proxy (bypasses CORS)
           const processor = model.provider === 'anthropic'
-            ? processAnthropicStream(response)
-            : processOpenAIStream(response);
+            ? processAnthropicStream(model.baseUrl, headers, body)
+            : processOpenAIStream(model.baseUrl, headers, body);
 
           let streamContent = '';
           let streamThought = '';

@@ -866,6 +866,106 @@ async fn sftp_create_directory(
     Ok(())
 }
 
+// ── HTTP Proxy Commands (bypass CORS) ────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct HttpRequest {
+    url: String,
+    method: String,
+    headers: HashMap<String, String>,
+    body: Option<String>,
+}
+
+#[tauri::command]
+async fn proxy_fetch(request: HttpRequest) -> Result<String, String> {
+    let client = reqwest::Client::new();
+    let method = match request.method.to_uppercase().as_str() {
+        "GET" => reqwest::Method::GET,
+        "POST" => reqwest::Method::POST,
+        _ => reqwest::Method::GET,
+    };
+
+    let mut req = client.request(method, &request.url);
+    for (key, value) in &request.headers {
+        req = req.header(key.as_str(), value.as_str());
+    }
+    if let Some(body) = &request.body {
+        req = req.body(body.clone());
+    }
+
+    let resp = req.send().await.map_err(err)?;
+    let status = resp.status().as_u16();
+    let text = resp.text().await.map_err(err)?;
+
+    if status < 200 || status >= 300 {
+        return Err(format!("HTTP {}: {}", status, text));
+    }
+
+    Ok(text)
+}
+
+#[tauri::command]
+async fn proxy_fetch_stream(
+    app_handle: tauri::AppHandle,
+    request: HttpRequest,
+    stream_id: String,
+) -> Result<(), String> {
+    let client = reqwest::Client::new();
+    let method = match request.method.to_uppercase().as_str() {
+        "GET" => reqwest::Method::GET,
+        "POST" => reqwest::Method::POST,
+        _ => reqwest::Method::GET,
+    };
+
+    let mut req = client.request(method, &request.url);
+    for (key, value) in &request.headers {
+        req = req.header(key.as_str(), value.as_str());
+    }
+    if let Some(body) = &request.body {
+        req = req.body(body.clone());
+    }
+
+    let resp = req.send().await.map_err(err)?;
+    let status = resp.status().as_u16();
+
+    if status < 200 || status >= 300 {
+        let text = resp.text().await.map_err(err)?;
+        app_handle
+            .emit(
+                &format!("proxy-stream-error-{}", stream_id),
+                format!("HTTP {}: {}", status, text),
+            )
+            .ok();
+        return Ok(());
+    }
+
+    let mut stream = resp.bytes_stream();
+    use futures::StreamExt;
+
+    while let Some(chunk_result) = stream.next().await {
+        match chunk_result {
+            Ok(bytes) => {
+                let text = String::from_utf8_lossy(&bytes).to_string();
+                app_handle
+                    .emit(&format!("proxy-stream-data-{}", stream_id), text)
+                    .ok();
+            }
+            Err(e) => {
+                app_handle
+                    .emit(&format!("proxy-stream-error-{}", stream_id), err(e))
+                    .ok();
+                return Ok(());
+            }
+        }
+    }
+
+    app_handle
+        .emit(&format!("proxy-stream-done-{}", stream_id), "")
+        .ok();
+
+    Ok(())
+}
+
 // ── App Setup ────────────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -915,6 +1015,8 @@ pub fn run() {
             sftp_delete_file,
             sftp_rename_file,
             sftp_create_directory,
+            proxy_fetch,
+            proxy_fetch_stream,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -135,6 +135,11 @@ const PROVIDER_DEFAULTS: Record<string, { baseUrl: string; placeholder: string; 
     placeholder: 'deepseek-chat, deepseek-reasoner, ...',
     hint: 'DeepSeek API. Key from platform.deepseek.com',
   },
+  bailian: {
+    baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions',
+    placeholder: 'qwen-plus, qwen-max, deepseek-r1, ...',
+    hint: '阿里云百炼 Token Plan 个人版。Key 从 bailian.console.aliyun.com 获取',
+  },
   custom: {
     baseUrl: '',
     placeholder: 'model-name',
@@ -758,6 +763,7 @@ export default function AISidebar() {
                     <option value="anthropic">Anthropic</option>
                     <option value="google">Google</option>
                     <option value="deepseek">DeepSeek</option>
+                    <option value="bailian">Bailian (百炼)</option>
                     <option value="custom">Custom</option>
                   </select>
                 </label>
@@ -835,7 +841,7 @@ export default function AISidebar() {
                 )}
 
                 <p className="ai-config-hint-text">
-                  {PROVIDER_DEFAULTS[modelForm.provider]?.hint}
+                  {modelForm.provider === 'bailian' ? tr('ai.providerHintBailian') : PROVIDER_DEFAULTS[modelForm.provider]?.hint}
                 </p>
 
                 <div className="ai-config-model-form-footer">

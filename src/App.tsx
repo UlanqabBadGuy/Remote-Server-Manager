@@ -2,10 +2,12 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useAppStore } from './store/useAppStore';
 import { useAIStore } from './store/useAIStore';
 import MenuBar from './components/MenuBar';
+import IconRail from './components/IconRail';
 import Sidebar from './components/Sidebar';
 import TabBar from './components/TabBar';
 import Terminal from './components/Terminal';
 import FileBrowser from './components/FileBrowser';
+import EditorTab from './components/Editor';
 import AISidebar from './components/AISidebar';
 import TourGuide from './components/TourGuide';
 import UpdateChecker from './components/UpdateChecker';
@@ -42,7 +44,7 @@ function savePanelWidths(left: number, right: number) {
 }
 
 function App() {
-  const { tabs, activeTabId, theme } = useAppStore();
+  const { tabs, activeTabId, theme, sidebarVisible } = useAppStore();
   const { visible: aiVisible } = useAIStore();
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [editingConnection, setEditingConnection] = useState<ConnectionConfig | null>(null);
@@ -141,14 +143,17 @@ function App() {
     <div className={`app ${theme} ${dragging ? 'app-dragging' : ''}`}>
       <MenuBar />
       <div className="app-main">
-        <div style={{ width: `${leftWidth}px`, minWidth: `${leftWidth}px`, flexShrink: 0 }}>
-          <Sidebar
-          onNewConnection={handleNewConnection}
-          onNewConnectionInGroup={handleNewConnectionInGroup}
-          onEditConnection={handleEditConnection}
-          onQuickConnect={() => setShowQuickConnect(true)}
-        />
-      </div>
+        <IconRail />
+        {sidebarVisible && (
+          <>
+            <div style={{ width: `${leftWidth}px`, minWidth: `${leftWidth}px`, flexShrink: 0 }}>
+              <Sidebar
+              onNewConnection={handleNewConnection}
+              onNewConnectionInGroup={handleNewConnectionInGroup}
+              onEditConnection={handleEditConnection}
+              onQuickConnect={() => setShowQuickConnect(true)}
+            />
+          </div>
 
       <div
         className="resize-handle"
@@ -156,37 +161,51 @@ function App() {
       >
         <div className="resize-handle-bar" />
       </div>
+          </>
+        )}
 
       <div className="main-content">
         <TabBar />
         <div className="content-area" data-tour="terminal-area">
-          {activeTab ? (
-            activeTab.type === 'terminal' ? (
-              <Terminal
-                connectionId={activeTab.connectionId}
-                connectionName={activeTab.connectionName}
-              />
-            ) : activeTab.type === 'files' ? (
-              <FileBrowser
-                connectionId={activeTab.connectionId}
-                sessionId={activeTab.sessionId || ''}
-              />
-            ) : (
-              <div className="tab-content">
-                <div className="tab-placeholder">
-                  <div className="tab-placeholder-icon">
-                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--text-secondary)" strokeWidth="1.5">
-                      <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-                    </svg>
-                  </div>
-                  <div className="tab-placeholder-title">File Browser</div>
-                  <div className="tab-placeholder-subtitle">
-                    {activeTab.connectionName}
+          {tabs.map((tab) => (
+            <div
+              key={tab.id}
+              style={{ display: tab.id === activeTabId ? 'contents' : 'none' }}
+            >
+              {tab.type === 'terminal' ? (
+                <Terminal
+                  connectionId={tab.connectionId}
+                  connectionName={tab.connectionName}
+                />
+              ) : tab.type === 'files' ? (
+                <FileBrowser
+                  connectionId={tab.connectionId}
+                  sessionId={tab.sessionId || ''}
+                />
+              ) : tab.type === 'editor' ? (
+                <EditorTab
+                  connectionId={tab.connectionId}
+                  filePath={tab.filePath || ''}
+                  fileName={tab.fileName || ''}
+                />
+              ) : (
+                <div className="tab-content">
+                  <div className="tab-placeholder">
+                    <div className="tab-placeholder-icon">
+                      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--text-secondary)" strokeWidth="1.5">
+                        <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                      </svg>
+                    </div>
+                    <div className="tab-placeholder-title">File Browser</div>
+                    <div className="tab-placeholder-subtitle">
+                      {tab.connectionName}
+                    </div>
                   </div>
                 </div>
-              </div>
-            )
-          ) : (
+              )}
+            </div>
+          ))}
+          {!activeTab && (
             <Welcome
               onNewConnection={handleNewConnection}
               onQuickConnect={() => setShowQuickConnect(true)}

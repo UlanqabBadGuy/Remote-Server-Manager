@@ -7,6 +7,7 @@ use russh::keys::key::PrivateKeyWithHashAlg;
 use russh::ChannelMsg;
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -108,6 +109,8 @@ pub struct AppState {
     pub connections: Mutex<Vec<ConnectionConfig>>,
     pub groups: Mutex<Vec<Group>>,
     pub(crate) sessions: Mutex<HashMap<String, Arc<SshSessionInner>>>,
+    // Dedicated SFTP sessions (separate SSH connections for file operations)
+    pub(crate) sftp_sessions: Mutex<HashMap<String, Arc<russh_sftp::client::SftpSession>>>,
 }
 
 impl AppState {
@@ -133,23 +136,37 @@ impl AppState {
             connections: Mutex::new(connections),
             groups: Mutex::new(groups),
             sessions: Mutex::new(HashMap::new()),
+            sftp_sessions: Mutex::new(HashMap::new()),
         }
     }
 
     fn load_json<T: for<'de> Deserialize<'de>>(path: &PathBuf) -> Option<T> {
         let data = std::fs::read_to_string(path).ok()?;
-        serde_json::from_str(&data).ok()
+        match serde_json::from_str(&data) {
+            Ok(v) => {
+                log::info!("Loaded data from {}", path.display());
+                Some(v)
+            }
+            Err(e) => {
+                log::error!("Failed to parse {}: {}", path.display(), e);
+                None
+            }
+        }
     }
 
     async fn save_connections(&self) {
         if let Ok(json) = serde_json::to_string_pretty(&*self.connections.lock().await) {
-            std::fs::write(&self.config_path, json).ok();
+            if let Err(e) = std::fs::write(&self.config_path, json) {
+                log::error!("Failed to save connections: {}", e);
+            }
         }
     }
 
     async fn save_groups(&self) {
         if let Ok(json) = serde_json::to_string_pretty(&*self.groups.lock().await) {
-            std::fs::write(&self.groups_path, json).ok();
+            if let Err(e) = std::fs::write(&self.groups_path, json) {
+                log::error!("Failed to save groups: {}", e);
+            }
         }
     }
 }
@@ -181,6 +198,7 @@ async fn add_connection(
     connections.push(config.clone());
     drop(connections);
     state.save_connections().await;
+    log::info!("Added connection: {} ({}@{}:{})", config.name, config.username, config.host, config.port);
     Ok(config)
 }
 
@@ -202,6 +220,7 @@ async fn update_connection(
     connections[pos] = updated.clone();
     drop(connections);
     state.save_connections().await;
+    log::info!("Updated connection: {} ({})", updated.name, updated.id);
     Ok(updated)
 }
 
@@ -222,6 +241,7 @@ async fn delete_connection(
     let entry = keyring::Entry::new("remote-ssh-manager", &id).map_err(err)?;
     entry.delete_credential().ok();
 
+    log::info!("Deleted connection: {}", id);
     Ok(())
 }
 
@@ -441,9 +461,14 @@ async fn ssh_connect(
 
     let addr = (config.host.as_str(), config.port);
 
+    log::info!("Connecting to {} ({}) as {}...", config.name, config.host, config.username);
+
     let mut session = russh::client::connect(ssh_config, addr, handler)
         .await
-        .map_err(|e| format!("SSH connection failed: {}", e))?;
+        .map_err(|e| {
+            log::error!("SSH connection to {} failed: {}", config.host, e);
+            format!("SSH connection failed: {}", e)
+        })?;
 
     // Authenticate
     match config.auth_type {
@@ -457,8 +482,10 @@ async fn ssh_connect(
                 .await
                 .map_err(|e| format!("Authentication failed: {}", e))?;
             if !auth_result.success() {
+                log::error!("Password authentication rejected for {}", config.username);
                 return Err("Authentication rejected by server".into());
             }
+            log::info!("Password authentication successful for {}", config.username);
         }
         AuthType::KeyFile => {
             let key_path = config
@@ -482,8 +509,10 @@ async fn ssh_connect(
                 .await
                 .map_err(|e| format!("Key authentication failed: {}", e))?;
             if !auth_result.success() {
+                log::error!("Key authentication rejected for {}", config.username);
                 return Err("Key authentication rejected by server".into());
             }
+            log::info!("Key authentication successful for {}", config.username);
         }
     }
 
@@ -505,6 +534,8 @@ async fn ssh_connect(
         .request_shell(false)
         .await
         .map_err(|e| format!("Failed to request shell: {}", e))?;
+
+    log::info!("SSH session {} established for {} (pty {}x{})", session_id, connection_name, term_cols, term_rows);
 
     // Set up command channel
     let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel::<SshCommand>();
@@ -544,6 +575,7 @@ async fn ssh_connect(
                             app_handle_clone.emit("ssh-output", payload).ok();
                         }
                         Some(ChannelMsg::ExitStatus { exit_status }) => {
+                            log::info!("Session {} exited with code {}", session_id_clone, exit_status);
                             let payload = serde_json::json!({
                                 "session_id": &session_id_clone,
                                 "data": format!("\r\n[Process exited with code {}]\r\n", exit_status),
@@ -594,6 +626,7 @@ async fn ssh_disconnect(
 
     if let Some(session) = session {
         session.cmd_tx.send(SshCommand::Close).ok();
+        log::info!("Session {} disconnected", session_id);
     }
 
     Ok(())
@@ -652,43 +685,622 @@ async fn ssh_list_sessions(
 
 // ── SFTP Commands ────────────────────────────────────────────────────────────
 
-async fn open_sftp_channel(
-    session_handle: &russh::client::Handle<ClientHandler>,
-) -> Result<russh_sftp::client::SftpSession, String> {
-    let sftp_channel = session_handle
-        .channel_open_session()
-        .await
-        .map_err(|e| format!("Failed to open SFTP channel: {}", e))?;
+fn hex_preview(data: &[u8], max: usize) -> String {
+    let n = data.len().min(max);
+    let hex: Vec<String> = data[..n].iter().map(|b| format!("{:02x}", b)).collect();
+    let ascii: String = data[..n]
+        .iter()
+        .map(|b| if *b >= 0x20 && *b < 0x7f { *b as char } else { '.' })
+        .collect();
+    format!("[{}] \"{}\"", hex.join(" "), ascii)
+}
 
-    sftp_channel
+/// Scan a buffer for the byte offset where the SFTP SSH_FXP_VERSION packet starts.
+///
+/// Some servers inject shell/profile output (MOTD, monitoring scripts) into the
+/// SFTP channel before the protocol begins. The SFTP parser then mis-reads the
+/// first garbage bytes as a huge packet length and hangs. This locates the real
+/// VERSION packet so the prefix garbage can be stripped.
+///
+/// A valid VERSION packet begins with:
+///   [4-byte length][type=0x02][4-byte version]
+fn find_sftp_version_start(buf: &[u8]) -> Option<usize> {
+    if buf.len() < 9 {
+        return None;
+    }
+    for i in 0..=(buf.len() - 9) {
+        let len = u32::from_be_bytes([buf[i], buf[i + 1], buf[i + 2], buf[i + 3]]);
+        let typ = buf[i + 4];
+        let ver = u32::from_be_bytes([buf[i + 5], buf[i + 6], buf[i + 7], buf[i + 8]]);
+        // type must be SSH_FXP_VERSION (2); length and version must be sane.
+        // Text garbage never contains a 0x02 type byte, so this is reliable.
+        if typ == 0x02 && (5..=262144).contains(&len) && (1..=6).contains(&ver) {
+            return Some(i);
+        }
+    }
+    None
+}
+
+/// Find the byte offset of `needle` within `haystack`.
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+    haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+#[derive(Serialize)]
+struct SftpConnectResult {
+    session_id: String,
+    home_path: String,
+}
+
+/// Try to open an SFTP session on a given SSH session handle.
+///
+/// When `sudo_password` is Some, the session is elevated to root via sudo.
+async fn open_sftp_on_session(
+    session_handle: &Arc<russh::client::Handle<ClientHandler>>,
+    sudo_password: Option<&str>,
+) -> Result<russh_sftp::client::SftpSession, String> {
+    let sftp_config = russh_sftp::client::Config {
+        request_timeout_secs: 30,
+        ..Default::default()
+    };
+
+    if let Some(password) = sudo_password {
+        log::info!("Trying SFTP via sudo elevation...");
+        match try_sftp_sudo(session_handle, password, &sftp_config).await {
+            Ok(sftp) => {
+                log::info!("SFTP sudo elevation succeeded");
+                return Ok(sftp);
+            }
+            Err(e) => {
+                log::warn!("SFTP sudo elevation failed: {}", e);
+                return Err(format!("Privileged SFTP (sudo) failed: {}", e));
+            }
+        }
+    }
+
+    log::info!("Trying SFTP subsystem...");
+    match try_sftp_subsystem(session_handle, &sftp_config).await {
+        Ok(sftp) => {
+            log::info!("SFTP subsystem succeeded");
+            return Ok(sftp);
+        }
+        Err(e) => log::warn!("SFTP subsystem failed: {}", e),
+    }
+
+    Err(format!(
+        "SFTP connection failed. The server may not have SFTP subsystem configured. \
+         Check sshd_config for 'Subsystem sftp' on the remote server. \
+         (Last error: {})",
+        "subsystem rejected or timed out"
+    ))
+}
+
+/// Open SFTP subsystem on a channel.
+/// Uses channel.wait() for reading (proven to work) via a duplex bridge,
+/// bypassing into_stream()/ChannelRx which fails to deliver data on some servers.
+async fn try_sftp_subsystem(
+    handle: &Arc<russh::client::Handle<ClientHandler>>,
+    cfg: &russh_sftp::client::Config,
+) -> Result<russh_sftp::client::SftpSession, String> {
+    log::info!("  [subsystem] Opening channel...");
+    let mut channel = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        handle.channel_open_session(),
+    )
+    .await
+    .map_err(|_| "Channel open timed out (10s)".to_string())?
+    .map_err(|e| format!("Failed to open channel: {}", e))?;
+    log::info!("  [subsystem] Channel opened, requesting sftp subsystem...");
+
+    channel
         .request_subsystem(true, "sftp")
         .await
         .map_err(|e| format!("Failed to request SFTP subsystem: {}", e))?;
 
-    let stream = sftp_channel.into_stream();
-
-    let sftp = russh_sftp::client::SftpSession::new(stream)
+    // Wait for Success/Failure before proceeding
+    loop {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            channel.wait(),
+        )
         .await
-        .map_err(|e| format!("Failed to initialize SFTP: {}", e))?;
+        {
+            Ok(Some(ChannelMsg::Success)) => {
+                log::info!("  [subsystem] Server confirmed SFTP subsystem (Success)");
+                break;
+            }
+            Ok(Some(ChannelMsg::Failure)) => {
+                return Err("SFTP subsystem rejected by server".to_string());
+            }
+            Ok(Some(ChannelMsg::Eof)) | Ok(None) => {
+                return Err("Channel closed while waiting for SFTP subsystem".to_string());
+            }
+            Ok(Some(other)) => {
+                log::info!("  [subsystem] Skipping message: {:?}", other);
+                continue;
+            }
+            Err(_) => {
+                return Err("Timed out waiting for SFTP subsystem confirmation".to_string());
+            }
+        }
+    }
 
-    Ok(sftp)
+    // Bridge: channel.wait() ↔ duplex pipe ↔ SftpSession
+    // This bypasses into_stream()/ChannelRx which fails to deliver SFTP data
+    // on some servers, and strips any shell/profile garbage the server injects
+    // before the SFTP VERSION packet.
+    let (client_side, mut bridge_side) = tokio::io::duplex(65536);
+
+    tokio::spawn(async move {
+        let mut chan = channel;
+        let mut read_buf = vec![0u8; 32768];
+        let mut pending = Vec::new(); // buffers server data until VERSION start is found
+        let mut sftp_started = false; // true once VERSION packet start is located
+        loop {
+            tokio::select! {
+                msg = chan.wait() => {
+                    match msg {
+                        Some(ChannelMsg::Data { data }) => {
+                            if sftp_started {
+                                if bridge_side.write_all(&data).await.is_err() {
+                                    break;
+                                }
+                            } else {
+                                pending.extend_from_slice(&data);
+                                if let Some(idx) = find_sftp_version_start(&pending) {
+                                    if idx > 0 {
+                                        log::warn!(
+                                            "  [bridge] stripped {} bytes of leading garbage: {}",
+                                            idx,
+                                            hex_preview(&pending[..idx], 48)
+                                        );
+                                    }
+                                    let rest = pending.split_off(idx);
+                                    sftp_started = true;
+                                    log::info!(
+                                        "  [bridge] SFTP VERSION found, forwarding {} bytes",
+                                        rest.len()
+                                    );
+                                    if bridge_side.write_all(&rest).await.is_err() {
+                                        break;
+                                    }
+                                } else if pending.len() > 1_000_000 {
+                                    // Safety valve: give up scanning and pass data through.
+                                    log::warn!("  [bridge] no SFTP VERSION header in first 1MB, passing through");
+                                    let rest = std::mem::take(&mut pending);
+                                    sftp_started = true;
+                                    if bridge_side.write_all(&rest).await.is_err() {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        Some(ChannelMsg::ExtendedData { data, ext }) => {
+                            // Server stderr — log but do not forward to the SFTP parser.
+                            log::info!(
+                                "  [bridge] ExtendedData (ext={}, {} bytes): {}",
+                                ext,
+                                data.len(),
+                                hex_preview(&data, 48)
+                            );
+                        }
+                        Some(ChannelMsg::Eof) => {
+                            log::info!("  [bridge] recv Eof");
+                            bridge_side.shutdown().await.ok();
+                            break;
+                        }
+                        None => {
+                            log::info!("  [bridge] channel closed (None)");
+                            break;
+                        }
+                        Some(other) => {
+                            log::info!("  [bridge] recv other: {:?}", other);
+                        }
+                    }
+                }
+                n = bridge_side.read(&mut read_buf) => {
+                    match n {
+                        Ok(0) => {
+                            log::info!("  [bridge] SftpSession closed pipe (read 0)");
+                            chan.eof().await.ok();
+                            break;
+                        }
+                        Ok(n) => {
+                            if chan.data_bytes(read_buf[..n].to_vec()).await.is_err() {
+                                log::warn!("  [bridge] data_bytes failed");
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!("  [bridge] read error: {}", e);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        log::info!("  [bridge] task ended");
+    });
+
+    log::info!("  [subsystem] Bridge started, initializing SFTP protocol...");
+
+    tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        russh_sftp::client::SftpSession::new_with_config(client_side, cfg.clone()),
+    )
+    .await
+    .map_err(|_| "SFTP protocol initialization timed out (20s)".to_string())?
+    .map_err(|e| format!("SFTP protocol init failed: {}", e))
+}
+
+/// Open an SFTP session with elevated (root) privileges via sudo.
+///
+/// sudo and sftp-server share the same stdin, so the sudo password must reach
+/// sudo before any SFTP data. We orchestrate this by having the elevated shell
+/// print a ready marker immediately before exec'ing sftp-server; only after the
+/// marker is seen do we start the SFTP handshake (send INIT). The garbage-
+/// stripping bridge then handles any output preceding the SFTP VERSION packet.
+async fn try_sftp_sudo(
+    handle: &Arc<russh::client::Handle<ClientHandler>>,
+    password: &str,
+    cfg: &russh_sftp::client::Config,
+) -> Result<russh_sftp::client::SftpSession, String> {
+    const SUDO_PROMPT: &str = "SFTP_SUDO_PROMPT_7f3a";
+    const READY_MARKER: &str = "__SFTP_SUDO_READY__";
+
+    let cmd = format!(
+        "sudo -S -p '{prompt}' /bin/sh -c 'for p in /usr/lib/openssh/sftp-server /usr/libexec/openssh/sftp-server /usr/libexec/sftp-server /usr/lib/ssh/sftp-server; do if [ -x \"$p\" ]; then echo {marker}; exec \"$p\"; fi; done; exit 127'",
+        prompt = SUDO_PROMPT,
+        marker = READY_MARKER
+    );
+
+    log::info!("  [sudo] Opening channel...");
+    let mut channel = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        handle.channel_open_session(),
+    )
+    .await
+    .map_err(|_| "Channel open timed out".to_string())?
+    .map_err(|e| format!("Failed to open channel: {}", e))?;
+
+    log::info!("  [sudo] Channel opened, exec sudo sftp-server...");
+    channel
+        .exec(false, cmd)
+        .await
+        .map_err(|e| format!("Failed to exec sudo sftp-server: {}", e))?;
+
+    // Phase 1: sudo orchestration — wait for the ready marker, answer the prompt.
+    let mut stdout_buf = Vec::new();
+    let mut stderr_buf = Vec::new();
+    let mut password_sent = false;
+    let mut leftover = Vec::new();
+
+    let phase1 = async {
+        loop {
+            match channel.wait().await {
+                Some(ChannelMsg::Data { data }) => {
+                    stdout_buf.extend_from_slice(&data);
+                    // Defensive: some sudo builds write the prompt to stdout.
+                    if !password_sent
+                        && find_bytes(&stdout_buf, SUDO_PROMPT.as_bytes()).is_some()
+                    {
+                        log::info!("  [sudo] prompt on stdout, sending password");
+                        let mut pw = password.as_bytes().to_vec();
+                        pw.push(b'\n');
+                        channel.data_bytes(pw).await.ok();
+                        password_sent = true;
+                    }
+                    if let Some(pos) = find_bytes(&stdout_buf, READY_MARKER.as_bytes()) {
+                        let after = pos + READY_MARKER.len();
+                        leftover = stdout_buf[after..].to_vec();
+                        log::info!(
+                            "  [sudo] ready marker found (password_sent={})",
+                            password_sent
+                        );
+                        return Ok::<(), String>(());
+                    }
+                }
+                Some(ChannelMsg::ExtendedData { data, .. }) => {
+                    stderr_buf.extend_from_slice(&data);
+                    if !password_sent
+                        && find_bytes(&stderr_buf, SUDO_PROMPT.as_bytes()).is_some()
+                    {
+                        log::info!("  [sudo] prompt on stderr, sending password");
+                        let mut pw = password.as_bytes().to_vec();
+                        pw.push(b'\n');
+                        channel.data_bytes(pw).await.ok();
+                        password_sent = true;
+                    }
+                }
+                Some(ChannelMsg::ExitStatus { exit_status }) => {
+                    return Err(format!(
+                        "sudo exited with status {} before starting sftp-server. stderr: {}",
+                        exit_status,
+                        String::from_utf8_lossy(&stderr_buf).trim()
+                    ));
+                }
+                Some(ChannelMsg::Eof) | None => {
+                    return Err(format!(
+                        "Channel closed during sudo elevation. stderr: {}",
+                        String::from_utf8_lossy(&stderr_buf).trim()
+                    ));
+                }
+                _ => {}
+            }
+        }
+    };
+
+    tokio::time::timeout(std::time::Duration::from_secs(40), phase1)
+        .await
+        .map_err(|_| {
+            format!(
+                "sudo elevation timed out (40s). stderr: {}",
+                String::from_utf8_lossy(&stderr_buf).trim()
+            )
+        })??;
+
+    // Phase 2: hand off to SftpSession via a garbage-stripping bridge.
+    let (client_side, mut bridge_side) = tokio::io::duplex(65536);
+
+    tokio::spawn(async move {
+        let mut chan = channel;
+        let mut read_buf = vec![0u8; 32768];
+        let mut pending = leftover;
+        let mut sftp_started = false;
+
+        // Forward bytes that already arrived right after the marker.
+        if let Some(idx) = find_sftp_version_start(&pending) {
+            if idx > 0 {
+                log::warn!("  [sudo-bridge] stripped {} garbage bytes", idx);
+            }
+            let rest = pending.split_off(idx);
+            sftp_started = true;
+            bridge_side.write_all(&rest).await.ok();
+        }
+
+        loop {
+            tokio::select! {
+                msg = chan.wait() => {
+                    match msg {
+                        Some(ChannelMsg::Data { data }) => {
+                            if sftp_started {
+                                if bridge_side.write_all(&data).await.is_err() { break; }
+                            } else {
+                                pending.extend_from_slice(&data);
+                                if let Some(idx) = find_sftp_version_start(&pending) {
+                                    if idx > 0 {
+                                        log::warn!("  [sudo-bridge] stripped {} garbage bytes", idx);
+                                    }
+                                    let rest = pending.split_off(idx);
+                                    sftp_started = true;
+                                    if bridge_side.write_all(&rest).await.is_err() { break; }
+                                } else if pending.len() > 1_000_000 {
+                                    let rest = std::mem::take(&mut pending);
+                                    sftp_started = true;
+                                    if bridge_side.write_all(&rest).await.is_err() { break; }
+                                }
+                            }
+                        }
+                        Some(ChannelMsg::ExtendedData { .. }) => {}
+                        Some(ChannelMsg::Eof) | None => {
+                            bridge_side.shutdown().await.ok();
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                n = bridge_side.read(&mut read_buf) => {
+                    match n {
+                        Ok(0) => {
+                            chan.eof().await.ok();
+                            break;
+                        }
+                        Ok(n) => {
+                            if chan.data_bytes(read_buf[..n].to_vec()).await.is_err() { break; }
+                        }
+                        Err(_) => break,
+                    }
+                }
+            }
+        }
+        log::info!("  [sudo-bridge] task ended");
+    });
+
+    log::info!("  [sudo] Bridge started, initializing SFTP protocol...");
+    tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        russh_sftp::client::SftpSession::new_with_config(client_side, cfg.clone()),
+    )
+    .await
+    .map_err(|_| "SFTP protocol initialization timed out after sudo (30s)".to_string())?
+    .map_err(|e| format!("SFTP protocol init failed after sudo: {}", e))
+}
+
+/// Establish SFTP connection. Reuses the existing SSH session when available
+/// (matching MobaXterm's single-connection behavior). Falls back to a new
+/// connection if no terminal session exists.
+#[tauri::command]
+async fn sftp_connect(
+    state: tauri::State<'_, AppState>,
+    connection_id: String,
+    privileged: Option<bool>,
+) -> Result<SftpConnectResult, String> {
+    let privileged = privileged.unwrap_or(false);
+
+    let config = {
+        let connections = state.connections.lock().await;
+        connections
+            .iter()
+            .find(|c| c.id == connection_id)
+            .cloned()
+            .ok_or_else(|| format!("Connection not found: {}", connection_id))?
+    };
+
+    // For privileged mode we reuse the stored SSH login password for sudo.
+    let sudo_password: Option<String> = if privileged {
+        match config.auth_type {
+            AuthType::Password => {
+                let entry =
+                    keyring::Entry::new("remote-ssh-manager", &connection_id).map_err(err)?;
+                let password = entry.get_password().map_err(|e| {
+                    format!("Privileged mode needs the stored SSH password: {}", e)
+                })?;
+                Some(password)
+            }
+            AuthType::KeyFile => {
+                return Err(
+                    "Privileged (sudo) mode requires a password-based connection. \
+                     This connection uses a key file, so no password is available for sudo. \
+                     Configure passwordless sudo on the server instead."
+                        .to_string(),
+                );
+            }
+        }
+    } else {
+        None
+    };
+
+    // Try to reuse the existing SSH session (like MobaXterm does)
+    let existing_handle = {
+        let sessions = state.sessions.lock().await;
+        sessions
+            .values()
+            .find(|s| s.connection_id == connection_id)
+            .map(|s| s.session_handle.clone())
+    };
+
+    let sftp = if let Some(handle) = existing_handle {
+        log::info!(
+            "Reusing existing SSH session for SFTP on {} ({}) privileged={}",
+            config.name,
+            config.host,
+            privileged
+        );
+        open_sftp_on_session(&handle, sudo_password.as_deref()).await
+    } else {
+        log::info!(
+            "No existing SSH session, creating new connection for SFTP on {} ({})",
+            config.name,
+            config.host
+        );
+        // Create a new SSH connection
+        let ssh_config = Arc::new(russh::client::Config::default());
+        let handler = ClientHandler;
+
+        let mut session = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            russh::client::connect(ssh_config, (config.host.as_str(), config.port), handler),
+        )
+        .await
+        .map_err(|_| {
+            log::error!("SFTP SSH connection to {} timed out after 30s", config.host);
+            format!("SFTP connection to {} timed out (30s)", config.host)
+        })?
+        .map_err(|e| {
+            log::error!("SFTP SSH connection to {} failed: {}", config.host, e);
+            format!("SFTP connection failed: {}", e)
+        })?;
+
+        // Authenticate
+        match config.auth_type {
+            AuthType::Password => {
+                let entry =
+                    keyring::Entry::new("remote-ssh-manager", &connection_id).map_err(err)?;
+                let password = entry
+                    .get_password()
+                    .map_err(|e| format!("Failed to get password for SFTP: {}", e))?;
+                let auth_result = session
+                    .authenticate_password(&config.username, &password)
+                    .await
+                    .map_err(|e| format!("SFTP authentication failed: {}", e))?;
+                if !auth_result.success() {
+                    return Err("SFTP authentication rejected by server".into());
+                }
+            }
+            AuthType::KeyFile => {
+                let key_path = config
+                    .key_path
+                    .as_ref()
+                    .ok_or_else(|| "Key file path not configured".to_string())?;
+                let key_pair = russh::keys::load_secret_key(key_path, None)
+                    .map_err(|e| format!("Failed to load key file for SFTP: {}", e))?;
+                let hash_alg = session
+                    .best_supported_rsa_hash()
+                    .await
+                    .map_err(|e| format!("Failed to negotiate hash for SFTP: {}", e))?
+                    .flatten();
+                let auth_result = session
+                    .authenticate_publickey(
+                        &config.username,
+                        PrivateKeyWithHashAlg::new(Arc::new(key_pair), hash_alg),
+                    )
+                    .await
+                    .map_err(|e| format!("SFTP key authentication failed: {}", e))?;
+                if !auth_result.success() {
+                    return Err("SFTP key authentication rejected by server".into());
+                }
+            }
+        }
+
+        let session_arc = Arc::new(session);
+        open_sftp_on_session(&session_arc, sudo_password.as_deref()).await
+    };
+
+    let sftp = sftp?;
+
+    // Get home directory via SFTP canonicalize (like MobaXterm starting at /home/user)
+    let home_path = sftp
+        .canonicalize(".")
+        .await
+        .unwrap_or_else(|_| "/".to_string());
+    log::info!("SFTP home path for {}: {}", config.name, home_path);
+
+    let sftp_session_id = Uuid::new_v4().to_string();
+    {
+        let mut sftp_sessions = state.sftp_sessions.lock().await;
+        sftp_sessions.insert(sftp_session_id.clone(), Arc::new(sftp));
+    }
+
+    log::info!(
+        "SFTP session {} established for {} (home: {})",
+        sftp_session_id,
+        config.name,
+        home_path
+    );
+    Ok(SftpConnectResult {
+        session_id: sftp_session_id,
+        home_path,
+    })
+}
+
+#[tauri::command]
+async fn sftp_disconnect(
+    state: tauri::State<'_, AppState>,
+    sftp_session_id: String,
+) -> Result<(), String> {
+    let mut sftp_sessions = state.sftp_sessions.lock().await;
+    if sftp_sessions.remove(&sftp_session_id).is_some() {
+        log::info!("SFTP session {} disconnected", sftp_session_id);
+    }
+    Ok(())
 }
 
 #[tauri::command]
 async fn sftp_list_directory(
     state: tauri::State<'_, AppState>,
-    session_id: String,
+    sftp_session_id: String,
     path: String,
 ) -> Result<Vec<FileEntry>, String> {
-    let session = {
-        let sessions = state.sessions.lock().await;
-        sessions
-            .get(&session_id)
+    let sftp = {
+        let sftp_sessions = state.sftp_sessions.lock().await;
+        sftp_sessions
+            .get(&sftp_session_id)
             .cloned()
-            .ok_or_else(|| format!("Session not found: {}", session_id))?
+            .ok_or_else(|| format!("SFTP session not found: {}", sftp_session_id))?
     };
-
-    let sftp = open_sftp_channel(&session.session_handle).await?;
 
     let read_dir = sftp
         .read_dir(&path)
@@ -723,61 +1335,65 @@ async fn sftp_list_directory(
         });
     }
 
-    sftp.close().await.map_err(err)?;
     Ok(result)
 }
 
 #[tauri::command]
 async fn sftp_upload_file(
     state: tauri::State<'_, AppState>,
-    session_id: String,
+    sftp_session_id: String,
     local_path: String,
     remote_path: String,
 ) -> Result<(), String> {
-    let session = {
-        let sessions = state.sessions.lock().await;
-        sessions
-            .get(&session_id)
+    let sftp = {
+        let sftp_sessions = state.sftp_sessions.lock().await;
+        sftp_sessions
+            .get(&sftp_session_id)
             .cloned()
-            .ok_or_else(|| format!("Session not found: {}", session_id))?
+            .ok_or_else(|| format!("SFTP session not found: {}", sftp_session_id))?
     };
 
     let data = std::fs::read(&local_path)
         .map_err(|e| format!("Failed to read local file: {}", e))?;
 
-    let sftp = open_sftp_channel(&session.session_handle).await?;
-
-    sftp.write(&remote_path, &data)
+    // russh-sftp's write() opens with WRITE only (no CREATE/TRUNCATE), so it
+    // fails with "No such file" when the remote file does not already exist.
+    // Use create() which opens with CREATE | TRUNCATE | WRITE, then flush and
+    // close via shutdown() so the upload is fully committed.
+    let mut file = sftp
+        .create(&remote_path)
+        .await
+        .map_err(|e| format!("Failed to create remote file {}: {}", remote_path, e))?;
+    file.write_all(&data)
         .await
         .map_err(|e| format!("Failed to upload file: {}", e))?;
+    file.shutdown()
+        .await
+        .map_err(|e| format!("Failed to finalize upload: {}", e))?;
 
-    sftp.close().await.map_err(err)?;
+    log::info!("Uploaded {} to {} ({} bytes)", local_path, remote_path, data.len());
     Ok(())
 }
 
 #[tauri::command]
 async fn sftp_download_file(
     state: tauri::State<'_, AppState>,
-    session_id: String,
+    sftp_session_id: String,
     remote_path: String,
     local_path: String,
 ) -> Result<(), String> {
-    let session = {
-        let sessions = state.sessions.lock().await;
-        sessions
-            .get(&session_id)
+    let sftp = {
+        let sftp_sessions = state.sftp_sessions.lock().await;
+        sftp_sessions
+            .get(&sftp_session_id)
             .cloned()
-            .ok_or_else(|| format!("Session not found: {}", session_id))?
+            .ok_or_else(|| format!("SFTP session not found: {}", sftp_session_id))?
     };
-
-    let sftp = open_sftp_channel(&session.session_handle).await?;
 
     let data = sftp
         .read(&remote_path)
         .await
         .map_err(|e| format!("Failed to download file: {}", e))?;
-
-    sftp.close().await.map_err(err)?;
 
     if let Some(parent) = std::path::Path::new(&local_path).parent() {
         std::fs::create_dir_all(parent)
@@ -787,24 +1403,23 @@ async fn sftp_download_file(
     std::fs::write(&local_path, data)
         .map_err(|e| format!("Failed to write local file: {}", e))?;
 
+    log::info!("Downloaded {} to {}", remote_path, local_path);
     Ok(())
 }
 
 #[tauri::command]
 async fn sftp_delete_file(
     state: tauri::State<'_, AppState>,
-    session_id: String,
+    sftp_session_id: String,
     path: String,
 ) -> Result<(), String> {
-    let session = {
-        let sessions = state.sessions.lock().await;
-        sessions
-            .get(&session_id)
+    let sftp = {
+        let sftp_sessions = state.sftp_sessions.lock().await;
+        sftp_sessions
+            .get(&sftp_session_id)
             .cloned()
-            .ok_or_else(|| format!("Session not found: {}", session_id))?
+            .ok_or_else(|| format!("SFTP session not found: {}", sftp_session_id))?
     };
-
-    let sftp = open_sftp_channel(&session.session_handle).await?;
 
     // Try to remove as file first, then as directory
     if let Err(_) = sftp.remove_file(&path).await {
@@ -813,56 +1428,133 @@ async fn sftp_delete_file(
             .map_err(|e| format!("Failed to delete: {}", e))?;
     }
 
-    sftp.close().await.map_err(err)?;
+    log::info!("Deleted remote path: {}", path);
     Ok(())
 }
 
 #[tauri::command]
 async fn sftp_rename_file(
     state: tauri::State<'_, AppState>,
-    session_id: String,
+    sftp_session_id: String,
     old_path: String,
     new_path: String,
 ) -> Result<(), String> {
-    let session = {
-        let sessions = state.sessions.lock().await;
-        sessions
-            .get(&session_id)
+    let sftp = {
+        let sftp_sessions = state.sftp_sessions.lock().await;
+        sftp_sessions
+            .get(&sftp_session_id)
             .cloned()
-            .ok_or_else(|| format!("Session not found: {}", session_id))?
+            .ok_or_else(|| format!("SFTP session not found: {}", sftp_session_id))?
     };
-
-    let sftp = open_sftp_channel(&session.session_handle).await?;
 
     sftp.rename(&old_path, &new_path)
         .await
         .map_err(|e| format!("Failed to rename: {}", e))?;
 
-    sftp.close().await.map_err(err)?;
+    log::info!("Renamed {} to {}", old_path, new_path);
     Ok(())
 }
 
 #[tauri::command]
 async fn sftp_create_directory(
     state: tauri::State<'_, AppState>,
-    session_id: String,
+    sftp_session_id: String,
     path: String,
 ) -> Result<(), String> {
-    let session = {
-        let sessions = state.sessions.lock().await;
-        sessions
-            .get(&session_id)
+    let sftp = {
+        let sftp_sessions = state.sftp_sessions.lock().await;
+        sftp_sessions
+            .get(&sftp_session_id)
             .cloned()
-            .ok_or_else(|| format!("Session not found: {}", session_id))?
+            .ok_or_else(|| format!("SFTP session not found: {}", sftp_session_id))?
     };
-
-    let sftp = open_sftp_channel(&session.session_handle).await?;
 
     sftp.create_dir(&path)
         .await
         .map_err(|e| format!("Failed to create directory: {}", e))?;
 
-    sftp.close().await.map_err(err)?;
+    log::info!("Created directory: {}", path);
+    Ok(())
+}
+
+#[tauri::command]
+async fn sftp_create_file(
+    state: tauri::State<'_, AppState>,
+    sftp_session_id: String,
+    path: String,
+) -> Result<(), String> {
+    let sftp = {
+        let sftp_sessions = state.sftp_sessions.lock().await;
+        sftp_sessions
+            .get(&sftp_session_id)
+            .cloned()
+            .ok_or_else(|| format!("SFTP session not found: {}", sftp_session_id))?
+    };
+
+    // create() opens with CREATE | TRUNCATE | WRITE, producing an empty file.
+    let mut file = sftp
+        .create(&path)
+        .await
+        .map_err(|e| format!("Failed to create file: {}", e))?;
+    file.shutdown()
+        .await
+        .map_err(|e| format!("Failed to finalize file creation: {}", e))?;
+
+    log::info!("Created file: {}", path);
+    Ok(())
+}
+
+#[tauri::command]
+async fn sftp_read_file(
+    state: tauri::State<'_, AppState>,
+    sftp_session_id: String,
+    path: String,
+) -> Result<String, String> {
+    let sftp = {
+        let sftp_sessions = state.sftp_sessions.lock().await;
+        sftp_sessions
+            .get(&sftp_session_id)
+            .cloned()
+            .ok_or_else(|| format!("SFTP session not found: {}", sftp_session_id))?
+    };
+
+    let data = sftp
+        .read(&path)
+        .await
+        .map_err(|e| format!("Failed to read file: {}", e))?;
+
+    String::from_utf8(data)
+        .map_err(|e| format!("File is not valid UTF-8: {}", e))
+}
+
+#[tauri::command]
+async fn sftp_write_file(
+    state: tauri::State<'_, AppState>,
+    sftp_session_id: String,
+    path: String,
+    content: String,
+) -> Result<(), String> {
+    let sftp = {
+        let sftp_sessions = state.sftp_sessions.lock().await;
+        sftp_sessions
+            .get(&sftp_session_id)
+            .cloned()
+            .ok_or_else(|| format!("SFTP session not found: {}", sftp_session_id))?
+    };
+
+    let data = content.into_bytes();
+    let mut file = sftp
+        .create(&path)
+        .await
+        .map_err(|e| format!("Failed to create file: {}", e))?;
+    file.write_all(&data)
+        .await
+        .map_err(|e| format!("Failed to write file: {}", e))?;
+    file.shutdown()
+        .await
+        .map_err(|e| format!("Failed to finalize write: {}", e))?;
+
+    log::info!("Wrote {} bytes to {}", data.len(), path);
     Ok(())
 }
 
@@ -966,6 +1658,48 @@ async fn proxy_fetch_stream(
     Ok(())
 }
 
+// ── Open Log Directory Command ───────────────────────────────────────────────
+
+#[tauri::command]
+async fn open_log_dir(app_handle: tauri::AppHandle) -> Result<(), String> {
+    let log_dir = app_handle
+        .path()
+        .app_log_dir()
+        .map_err(|e| format!("Failed to get log dir: {}", e))?;
+
+    // Ensure directory exists
+    std::fs::create_dir_all(&log_dir)
+        .map_err(|e| format!("Failed to create log dir: {}", e))?;
+
+    log::info!("Opening log directory: {}", log_dir.display());
+
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(&log_dir)
+            .spawn()
+            .map_err(|e| format!("Failed to open explorer: {}", e))?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&log_dir)
+            .spawn()
+            .map_err(|e| format!("Failed to open Finder: {}", e))?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&log_dir)
+            .spawn()
+            .map_err(|e| format!("Failed to open file manager: {}", e))?;
+    }
+
+    Ok(())
+}
+
 // ── App Setup ────────────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -976,13 +1710,20 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
-            }
+            // Log plugin: always enabled, writes to file + stdout
+            app.handle().plugin(
+                tauri_plugin_log::Builder::new()
+                    .targets([
+                        tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir { file_name: None }),
+                        tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
+                    ])
+                    .level(log::LevelFilter::Info)
+                    .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepAll)
+                    .timezone_strategy(tauri_plugin_log::TimezoneStrategy::UseLocal)
+                    .build(),
+            )?;
+
+            log::info!("Application started, data dir: {:?}", AppState::data_dir());
 
             let state = AppState::new();
             app.manage(state);
@@ -1009,14 +1750,20 @@ pub fn run() {
             ssh_write,
             ssh_resize,
             ssh_list_sessions,
+            sftp_connect,
+            sftp_disconnect,
             sftp_list_directory,
             sftp_upload_file,
             sftp_download_file,
             sftp_delete_file,
             sftp_rename_file,
             sftp_create_directory,
+            sftp_create_file,
+            sftp_read_file,
+            sftp_write_file,
             proxy_fetch,
             proxy_fetch_stream,
+            open_log_dir,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

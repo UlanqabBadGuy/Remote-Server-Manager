@@ -24,10 +24,12 @@ export interface Group {
 
 export interface Tab {
   id: string;
-  type: 'terminal' | 'files';
+  type: 'terminal' | 'files' | 'editor';
   connectionId: string;
   connectionName: string;
   sessionId?: string;
+  filePath?: string;
+  fileName?: string;
 }
 
 export interface AppState {
@@ -37,6 +39,8 @@ export interface AppState {
   activeTabId: string | null;
   theme: 'light' | 'dark';
   terminalTheme: string;
+  terminalFontSize: number;
+  sidebarVisible: boolean;
   loading: boolean;
 
   loadConnections: () => Promise<void>;
@@ -52,10 +56,13 @@ export interface AppState {
   exportConnections: (path: string) => Promise<void>;
   openTerminal: (connectionId: string, connectionName: string) => void;
   openFileBrowser: (connectionId: string, connectionName: string) => void;
+  openEditor: (connectionId: string, connectionName: string, filePath: string, fileName: string) => void;
   closeTab: (tabId: string) => void;
   setActiveTab: (tabId: string) => void;
   toggleTheme: () => void;
   setTerminalTheme: (id: string) => void;
+  setTerminalFontSize: (size: number) => void;
+  toggleSidebar: () => void;
   setSessionId: (tabId: string, sessionId: string) => void;
 }
 
@@ -70,6 +77,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   activeTabId: null,
   theme: (localStorage.getItem('ssh-manager-theme') as 'light' | 'dark') || 'light',
   terminalTheme: localStorage.getItem('ssh-manager-terminal-theme') || 'tokyo-night',
+  terminalFontSize: Number(localStorage.getItem('ssh-manager-terminal-fontsize')) || 14,
+  sidebarVisible: localStorage.getItem('ssh-manager-sidebar-visible') !== 'false',
   loading: false,
 
   loadConnections: async () => {
@@ -244,6 +253,32 @@ export const useAppStore = create<AppState>((set, get) => ({
     }));
   },
 
+  openEditor: (connectionId, connectionName, filePath, fileName) => {
+    const tabId = generateId();
+    const existingTab = get().tabs.find(
+      (t) =>
+        t.connectionId === connectionId &&
+        t.type === 'editor' &&
+        t.filePath === filePath
+    );
+    if (existingTab) {
+      set({ activeTabId: existingTab.id });
+      return;
+    }
+    const newTab: Tab = {
+      id: tabId,
+      type: 'editor',
+      connectionId,
+      connectionName,
+      filePath,
+      fileName,
+    };
+    set((state) => ({
+      tabs: [...state.tabs, newTab],
+      activeTabId: tabId,
+    }));
+  },
+
   closeTab: (tabId) => {
     set((state) => {
       const newTabs = state.tabs.filter((t) => t.id !== tabId);
@@ -275,6 +310,18 @@ export const useAppStore = create<AppState>((set, get) => ({
   setTerminalTheme: (id) => {
     localStorage.setItem('ssh-manager-terminal-theme', id);
     set({ terminalTheme: id });
+  },
+
+  setTerminalFontSize: (size) => {
+    localStorage.setItem('ssh-manager-terminal-fontsize', String(size));
+    set({ terminalFontSize: size });
+  },
+
+  toggleSidebar: () => {
+    const current = get().sidebarVisible;
+    const next = !current;
+    localStorage.setItem('ssh-manager-sidebar-visible', String(next));
+    set({ sidebarVisible: next });
   },
 
   setSessionId: (tabId, sessionId) => {

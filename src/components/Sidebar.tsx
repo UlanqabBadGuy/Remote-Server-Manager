@@ -2,11 +2,9 @@ import { useState, useEffect, useCallback, useRef, useMemo, useLayoutEffect } fr
 import { createPortal } from 'react-dom';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { useAppStore } from '../store/useAppStore';
-import { useAIStore } from '../store/useAIStore';
 import { useToastStore } from '../store/useToastStore';
 import { useI18nStore } from '../store/useI18nStore';
 import { t, tf } from '../i18n/translations';
-import { resetTour } from './TourGuide';
 import type { ConnectionConfig, Group } from '../store/useAppStore';
 
 interface SidebarProps {
@@ -32,7 +30,14 @@ interface GroupContextMenu {
   group: Group;
 }
 
-type ContextMenuState = ConnContextMenu | GroupContextMenu | { visible: false };
+interface EmptyContextMenu {
+  visible: boolean;
+  x: number;
+  y: number;
+  type: 'empty';
+}
+
+type ContextMenuState = ConnContextMenu | GroupContextMenu | EmptyContextMenu | { visible: false };
 
 interface TreeNode {
   group: Group;
@@ -179,12 +184,9 @@ function Sidebar({ onNewConnection, onNewConnectionInGroup, onEditConnection, on
     exportConnections,
     loadConnections,
     loadGroups,
-    toggleTheme,
-    theme,
   } = useAppStore();
 
   const { addToast } = useToastStore();
-  const { toggleVisible: toggleAI } = useAIStore();
   const { lang } = useI18nStore();
   const tr = (key: string) => t[lang][key] ?? key;
 
@@ -380,6 +382,19 @@ function Sidebar({ onNewConnection, onNewConnectionInGroup, onEditConnection, on
     []
   );
 
+  const handleEmptyContextMenu = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      setContextMenu({
+        visible: true,
+        x: e.clientX,
+        y: e.clientY,
+        type: 'empty',
+      });
+    },
+    []
+  );
+
   const handleOpenTerminal = (conn: ConnectionConfig) => {
     openTerminal(conn.id, conn.name);
     setContextMenu({ visible: false });
@@ -429,54 +444,6 @@ function Sidebar({ onNewConnection, onNewConnectionInGroup, onEditConnection, on
     <div className="sidebar" data-tour="sidebar">
       <div className="sidebar-header">
         <h2 className="sidebar-title">{tr('sidebar.title')}</h2>
-        <div className="sidebar-header-actions">
-          <button
-            className="icon-btn"
-            onClick={toggleAI}
-            title={tr('sidebar.toggleAI')}
-            data-tour="ai-toggle"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M12 2L2 7l10 5 10-5-10-5z" />
-              <path d="M2 17l10 5 10-5" />
-              <path d="M2 12l10 5 10-5" />
-            </svg>
-          </button>
-          <button
-            className="icon-btn"
-            onClick={toggleTheme}
-            title={tf(tr('sidebar.switchTheme'), { theme: theme === 'light' ? tr('sidebar.themeDark') : tr('sidebar.themeLight') })}
-          >
-            {theme === 'light' ? (
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
-              </svg>
-            ) : (
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <circle cx="12" cy="12" r="5" />
-                <line x1="12" y1="1" x2="12" y2="3" />
-                <line x1="12" y1="21" x2="12" y2="23" />
-                <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
-                <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
-                <line x1="1" y1="12" x2="3" y2="12" />
-                <line x1="21" y1="12" x2="23" y2="12" />
-                <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
-                <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
-              </svg>
-            )}
-          </button>
-          <button
-            className="icon-btn"
-            onClick={resetTour}
-            title={tr('sidebar.startTour')}
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <circle cx="12" cy="12" r="10" />
-              <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
-              <line x1="12" y1="17" x2="12.01" y2="17" />
-            </svg>
-          </button>
-        </div>
       </div>
 
       <div className="sidebar-search">
@@ -509,7 +476,7 @@ function Sidebar({ onNewConnection, onNewConnectionInGroup, onEditConnection, on
         </button>
       </div>
 
-      <div className="sidebar-tree" data-tour="sidebar-tree">
+      <div className="sidebar-tree" data-tour="sidebar-tree" onContextMenu={handleEmptyContextMenu}>
         {/* Root-level groups */}
         {treeNodes.map((node) => (
           <GroupNodeItem
@@ -559,14 +526,6 @@ function Sidebar({ onNewConnection, onNewConnectionInGroup, onEditConnection, on
       </div>
 
       <div className="sidebar-footer" data-tour="import-export">
-        <button className="sidebar-btn footer-btn" onClick={handleAddRootGroup} title={tr('sidebar.addGroupTitle')}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-            <line x1="12" y1="11" x2="12" y2="17" />
-            <line x1="9" y1="14" x2="15" y2="14" />
-          </svg>
-          {tr('sidebar.addGroup')}
-        </button>
         <button className="sidebar-btn footer-btn" onClick={handleImport} title={tr('sidebar.importTitle')}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
@@ -711,6 +670,77 @@ function Sidebar({ onNewConnection, onNewConnectionInGroup, onEditConnection, on
                   <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
                 </svg>
                 {tr('sidebar.deleteGroup')}
+              </div>
+            </>
+          )}
+
+          {contextMenu.type === 'empty' && (
+            <>
+              <div
+                className="context-menu-item"
+                onClick={() => {
+                  onNewConnection();
+                  setContextMenu({ visible: false });
+                }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <line x1="12" y1="5" x2="12" y2="19" />
+                  <line x1="5" y1="12" x2="19" y2="12" />
+                </svg>
+                {tr('sidebar.newConnection')}
+              </div>
+              <div
+                className="context-menu-item"
+                onClick={() => handleAddRootGroup()}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                  <line x1="12" y1="11" x2="12" y2="17" />
+                  <line x1="9" y1="14" x2="15" y2="14" />
+                </svg>
+                {tr('sidebar.addGroup')}
+              </div>
+              <div className="context-menu-divider" />
+              <div
+                className="context-menu-item"
+                onClick={() => {
+                  onQuickConnect();
+                  setContextMenu({ visible: false });
+                }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <polyline points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+                </svg>
+                {tr('sidebar.quickConnect')}
+              </div>
+              <div className="context-menu-divider" />
+              <div
+                className="context-menu-item"
+                onClick={() => {
+                  handleImport();
+                  setContextMenu({ visible: false });
+                }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="7 10 12 15 17 10" />
+                  <line x1="12" y1="15" x2="12" y2="3" />
+                </svg>
+                {tr('sidebar.import')}
+              </div>
+              <div
+                className="context-menu-item"
+                onClick={() => {
+                  handleExport();
+                  setContextMenu({ visible: false });
+                }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="17 8 12 3 7 8" />
+                  <line x1="12" y1="3" x2="12" y2="15" />
+                </svg>
+                {tr('sidebar.export')}
               </div>
             </>
           )}

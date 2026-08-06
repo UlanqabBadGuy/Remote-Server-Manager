@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect } from 'react';
 import { check } from '@tauri-apps/plugin-updater';
 import { open } from '@tauri-apps/plugin-shell';
-import { appDataDir } from '@tauri-apps/api/path';
+import { invoke } from '@tauri-apps/api/core';
 import { getVersion } from '@tauri-apps/api/app';
 import { useI18nStore } from '../store/useI18nStore';
 import { useAppStore } from '../store/useAppStore';
@@ -60,14 +60,9 @@ export default function MenuBar() {
   const handleOpenLogs = useCallback(async () => {
     setActiveMenu(null);
     try {
-      const dataDir = await appDataDir();
-      const logsDir = `${dataDir}logs`;
-      await open(logsDir);
-    } catch {
-      try {
-        const dataDir = await appDataDir();
-        await open(dataDir);
-      } catch {}
+      await invoke('open_log_dir');
+    } catch (e) {
+      console.error('Failed to open log directory:', e);
     }
   }, []);
 

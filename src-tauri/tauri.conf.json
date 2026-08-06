@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Remote SSH Manager",
-  "version": "0.1.11",
+  "version": "0.1.2",
   "identifier": "com.sshmanager.desktop",
   "build": {
     "frontendDist": "../dist",

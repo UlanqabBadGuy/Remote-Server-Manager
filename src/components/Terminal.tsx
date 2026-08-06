@@ -40,6 +40,12 @@ export default function Terminal({ connectionId, connectionName }: TerminalProps
 
   const setSessionId = useAppStore((s) => s.setSessionId);
   const terminalTheme = useAppStore((s) => s.terminalTheme);
+  const terminalFontSize = useAppStore((s) => s.terminalFontSize);
+  const setTerminalFontSize = useAppStore((s) => s.setTerminalFontSize);
+
+  // Ref to keep latest value accessible inside the useEffect closure (avoid stale closure)
+  const terminalFontSizeRef = useRef(terminalFontSize);
+  terminalFontSizeRef.current = terminalFontSize;
 
   const handleDisconnect = useCallback(async (sessionId: string) => {
     try {
@@ -54,7 +60,7 @@ export default function Terminal({ connectionId, connectionName }: TerminalProps
 
     const term = new XTerm({
       cursorBlink: true,
-      fontSize: 14,
+      fontSize: terminalFontSize,
       fontFamily:
         "'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Menlo', 'Consolas', monospace",
       theme: getTerminalTheme(terminalTheme),
@@ -205,8 +211,59 @@ export default function Terminal({ connectionId, connectionName }: TerminalProps
 
     resizeObserver.observe(terminalRef.current);
 
-    // Copy/Paste keyboard shortcuts (DOM-level, for Ctrl+Shift+C/V fallback)
+    // Ctrl+Wheel font zoom
+    const handleWheel = (e: WheelEvent) => {
+      if (e.ctrlKey && !e.altKey && !e.shiftKey) {
+        e.preventDefault();
+        const delta = e.deltaY > 0 ? -1 : 1;
+        const newSize = Math.max(8, Math.min(24, terminalFontSizeRef.current + delta));
+        setTerminalFontSize(newSize);
+        term.options.fontSize = newSize;
+        try { fitAddon.fit(); } catch { /* ignore */ }
+        if (sessionId) {
+          invoke('ssh_resize', { sessionId, cols: term.cols, rows: term.rows }).catch(() => {});
+        }
+      }
+    };
+    terminalRef.current.addEventListener('wheel', handleWheel, { passive: false });
+
+    // Copy/Paste keyboard shortcuts + Zoom shortcuts
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Ctrl+Plus: zoom in
+      if (e.ctrlKey && !e.altKey && !e.shiftKey && (e.key === '=' || e.key === '+')) {
+        e.preventDefault();
+        const newSize = Math.min(24, terminalFontSizeRef.current + 1);
+        setTerminalFontSize(newSize);
+        term.options.fontSize = newSize;
+        try { fitAddon.fit(); } catch { /* ignore */ }
+        if (sessionId) {
+          invoke('ssh_resize', { sessionId, cols: term.cols, rows: term.rows }).catch(() => {});
+        }
+        return;
+      }
+      // Ctrl+Minus: zoom out
+      if (e.ctrlKey && !e.altKey && !e.shiftKey && e.key === '-') {
+        e.preventDefault();
+        const newSize = Math.max(8, terminalFontSizeRef.current - 1);
+        setTerminalFontSize(newSize);
+        term.options.fontSize = newSize;
+        try { fitAddon.fit(); } catch { /* ignore */ }
+        if (sessionId) {
+          invoke('ssh_resize', { sessionId, cols: term.cols, rows: term.rows }).catch(() => {});
+        }
+        return;
+      }
+      // Ctrl+0: reset font size
+      if (e.ctrlKey && !e.altKey && !e.shiftKey && e.key === '0') {
+        e.preventDefault();
+        setTerminalFontSize(14);
+        term.options.fontSize = 14;
+        try { fitAddon.fit(); } catch { /* ignore */ }
+        if (sessionId) {
+          invoke('ssh_resize', { sessionId, cols: term.cols, rows: term.rows }).catch(() => {});
+        }
+        return;
+      }
       if (e.ctrlKey && e.shiftKey && e.key === 'C') {
         e.preventDefault();
         const selection = term.getSelection();
@@ -233,6 +290,7 @@ export default function Terminal({ connectionId, connectionName }: TerminalProps
       onKeyDisposable.dispose();
       resizeObserver.disconnect();
       terminalRef.current?.removeEventListener('keydown', handleKeyDown);
+      terminalRef.current?.removeEventListener('wheel', handleWheel);
 
       if (unlistenRef.current) {
         unlistenRef.current();

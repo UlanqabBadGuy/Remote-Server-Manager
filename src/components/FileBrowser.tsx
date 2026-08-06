@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
-import { useAppStore } from '../store/useAppStore';
 import { useI18nStore } from '../store/useI18nStore';
+import { useAppStore } from '../store/useAppStore';
 import { t, tf } from '../i18n/translations';
 
 interface FileEntry {
@@ -76,11 +76,12 @@ function joinPath(parent: string, name: string): string {
   return `${parent}/${name}`;
 }
 
-function FileBrowser({ connectionId, sessionId: initialSessionId }: FileBrowserProps) {
-  const { setSessionId, tabs, activeTabId } = useAppStore();
+function FileBrowser({ connectionId }: FileBrowserProps) {
 
-  const [sessionId, setLocalSessionId] = useState(initialSessionId);
+  const [sftpSessionId, setSftpSessionId] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
+  const [privileged, setPrivileged] = useState(false);
+  const sessionIdRef = useRef<string | null>(null);
   const [currentPath, setCurrentPath] = useState('/');
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(false);
@@ -94,50 +95,83 @@ function FileBrowser({ connectionId, sessionId: initialSessionId }: FileBrowserP
   });
   const [selectedEntries, setSelectedEntries] = useState<Set<string>>(new Set());
   const { lang } = useI18nStore();
+  const openEditor = useAppStore((s) => s.openEditor);
+  const connections = useAppStore((s) => s.connections);
   const tr = (key: string) => t[lang][key] ?? key;
 
   const contextMenuRef = useRef<HTMLDivElement>(null);
+  const treeNodesRef = useRef<TreeNode[]>([]);
 
-  // Auto-connect if no sessionId
-  useEffect(() => {
-    if (!initialSessionId && !sessionId && !connecting) {
-      setConnecting(true);
-      setError(null);
-      invoke<string>('ssh_connect', {
-        connectionId,
-        termCols: 80,
-        termRows: 24,
-      })
-        .then((sid) => {
-          setLocalSessionId(sid);
-          setConnecting(false);
-          // Find the active tab and set sessionId
-          const activeTab = tabs.find((t) => t.id === activeTabId);
-          if (activeTab && activeTab.type === 'files') {
-            setSessionId(activeTab.id, sid);
-          }
-        })
-        .catch((e) => {
-          setError(`${tr('file.connectFailed')}: ${e}`);
-          setConnecting(false);
-        });
+  // Disconnect the current SFTP session (if any).
+  const disconnectCurrent = useCallback(async () => {
+    if (sessionIdRef.current) {
+      const sid = sessionIdRef.current;
+      sessionIdRef.current = null;
+      await invoke('sftp_disconnect', { sftpSessionId: sid }).catch(() => {});
     }
-  }, [initialSessionId]);
+  }, []);
+
+  // Connect to SFTP. When `priv` is true, elevate to root via sudo.
+  // Returns true on success.
+  const connectSftp = useCallback(async (priv: boolean): Promise<boolean> => {
+    await disconnectCurrent();
+    setConnecting(true);
+    setError(null);
+    try {
+      const result = await invoke<{ session_id: string; home_path: string }>('sftp_connect', {
+        connectionId,
+        privileged: priv,
+      });
+      sessionIdRef.current = result.session_id;
+      setSftpSessionId(result.session_id);
+      setCurrentPath(result.home_path);
+      setEntries([]);
+      setExpandedDirs(new Set());
+      return true;
+    } catch (e) {
+      sessionIdRef.current = null;
+      setSftpSessionId(null);
+      setError(`${tr('file.connectFailed')}: ${e}`);
+      return false;
+    } finally {
+      setConnecting(false);
+    }
+  }, [connectionId, disconnectCurrent]);
+
+  // Toggle root (sudo) browsing. Reverts the toggle if the connection fails.
+  const handleTogglePrivileged = useCallback(async () => {
+    if (connecting) return;
+    const next = !privileged;
+    setPrivileged(next);
+    const ok = await connectSftp(next);
+    if (!ok) setPrivileged(!next);
+  }, [privileged, connecting, connectSftp]);
+
+  // Connect on mount, disconnect on unmount.
+  useEffect(() => {
+    connectSftp(false);
+    return () => {
+      if (sessionIdRef.current) {
+        invoke('sftp_disconnect', { sftpSessionId: sessionIdRef.current }).catch(() => {});
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connectionId]);
 
   // Load root directory entries
   useEffect(() => {
-    if (sessionId) {
+    if (sftpSessionId) {
       loadDirectory(currentPath);
     }
-  }, [sessionId, currentPath]);
+  }, [sftpSessionId, currentPath]);
 
   const loadDirectory = useCallback(async (path: string) => {
-    if (!sessionId) return;
+    if (!sftpSessionId) return;
     setLoading(true);
     setError(null);
     try {
       const result = await invoke<FileEntry[]>('sftp_list_directory', {
-        sessionId,
+        sftpSessionId,
         path,
       });
       setEntries(result);
@@ -147,12 +181,12 @@ function FileBrowser({ connectionId, sessionId: initialSessionId }: FileBrowserP
     } finally {
       setLoading(false);
     }
-  }, [sessionId]);
+  }, [sftpSessionId]);
 
   const loadTreeChildren = useCallback(async (node: TreeNode): Promise<TreeNode> => {
     try {
       const result = await invoke<FileEntry[]>('sftp_list_directory', {
-        sessionId,
+        sftpSessionId,
         path: node.path,
       });
       const dirs = result.filter((e) => e.is_dir);
@@ -167,20 +201,79 @@ function FileBrowser({ connectionId, sessionId: initialSessionId }: FileBrowserP
     } catch {
       return { ...node, children: [], loaded: true, loading: false };
     }
-  }, [sessionId]);
+  }, [sftpSessionId]);
 
   // Initialize root tree nodes
   useEffect(() => {
-    if (sessionId) {
-      setTreeNodes([{
+    if (sftpSessionId) {
+      const root: TreeNode[] = [{
         name: '/',
         path: '/',
         children: null,
         loaded: false,
         loading: false,
-      }]);
+      }];
+      treeNodesRef.current = root;
+      setTreeNodes(root);
     }
-  }, [sessionId]);
+  }, [sftpSessionId]);
+
+  // Keep the left tree in sync with the right-side current path: expand and
+  // load every ancestor of currentPath so the open folder is visible in the tree.
+  useEffect(() => {
+    if (!sftpSessionId) return;
+    let cancelled = false;
+
+    (async () => {
+      const ancestors = getAncestors(currentPath);
+      // Expand all ancestors (including currentPath).
+      setExpandedDirs((prev) => {
+        const next = new Set(prev);
+        ancestors.forEach((a) => next.add(a));
+        return next;
+      });
+
+      let tree = treeNodesRef.current;
+      if (tree.length === 0) {
+        tree = [{ name: '/', path: '/', children: null, loaded: false, loading: false }];
+      }
+
+      for (const anc of ancestors) {
+        if (cancelled) return;
+        const node = findNode(tree, anc);
+        if (node && node.loaded) continue; // already loaded, keep state
+
+        let entries: FileEntry[] = [];
+        try {
+          entries = await invoke<FileEntry[]>('sftp_list_directory', {
+            sftpSessionId,
+            path: anc,
+          });
+        } catch {
+          entries = [];
+        }
+        if (cancelled) return;
+
+        const dirs = entries
+          .filter((e) => e.is_dir)
+          .map((d) => ({
+            name: d.name,
+            path: d.path,
+            children: null,
+            loaded: false,
+            loading: false,
+          }));
+
+        tree = insertChildren(tree, anc, dirs);
+        treeNodesRef.current = tree;
+        setTreeNodes(tree);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentPath, sftpSessionId]);
 
   const handleTreeToggle = useCallback(async (node: TreeNode) => {
     const path = node.path;
@@ -200,13 +293,11 @@ function FileBrowser({ connectionId, sessionId: initialSessionId }: FileBrowserP
 
     // Load children if not loaded
     if (!node.loaded && !node.loading) {
-      setTreeNodes((prev) =>
-        updateTreeNode(prev, path, { ...node, loading: true })
-      );
+      treeNodesRef.current = updateTreeNode(treeNodesRef.current, path, { ...node, loading: true });
+      setTreeNodes(treeNodesRef.current);
       const updated = await loadTreeChildren(node);
-      setTreeNodes((prev) =>
-        updateTreeNode(prev, path, updated)
-      );
+      treeNodesRef.current = updateTreeNode(treeNodesRef.current, path, updated);
+      setTreeNodes(treeNodesRef.current);
     }
   }, [expandedDirs, loadTreeChildren]);
 
@@ -250,8 +341,11 @@ function FileBrowser({ connectionId, sessionId: initialSessionId }: FileBrowserP
     if (entry.is_dir) {
       setCurrentPath(entry.path);
       setSelectedEntries(new Set());
+    } else {
+      const conn = connections.find((c) => c.id === connectionId);
+      openEditor(connectionId, conn?.name || '', entry.path, entry.name);
     }
-  }, []);
+  }, [connectionId, openEditor, connections]);
 
   const handleContextMenu = useCallback((e: React.MouseEvent, entry: FileEntry) => {
     e.preventDefault();
@@ -274,31 +368,33 @@ function FileBrowser({ connectionId, sessionId: initialSessionId }: FileBrowserP
   }, [contextMenu.visible]);
 
   const handleRefresh = useCallback(() => {
-    if (sessionId) {
+    if (sftpSessionId) {
       loadDirectory(currentPath);
       // Also reload tree
-      setTreeNodes([{
+      const root: TreeNode[] = [{
         name: '/',
         path: '/',
         children: null,
         loaded: false,
         loading: false,
-      }]);
+      }];
+      treeNodesRef.current = root;
+      setTreeNodes(root);
       setExpandedDirs(new Set());
     }
-  }, [sessionId, currentPath, loadDirectory]);
+  }, [sftpSessionId, currentPath, loadDirectory]);
 
   const handleUpload = useCallback(async () => {
-    if (!sessionId) return;
+    if (!sftpSessionId) return;
     try {
       const selected = await open({ multiple: true });
       if (!selected) return;
       const files = Array.isArray(selected) ? selected : [selected];
       for (const filePath of files) {
-        const fileName = filePath.split('/').pop() || filePath.split('\\').pop() || 'file';
+        const fileName = filePath.split('\\').pop()!.split('/').pop()!;
         const remotePath = joinPath(currentPath, fileName);
         await invoke('sftp_upload_file', {
-          sessionId,
+          sftpSessionId,
           localPath: filePath,
           remotePath,
         });
@@ -307,44 +403,57 @@ function FileBrowser({ connectionId, sessionId: initialSessionId }: FileBrowserP
     } catch (e) {
       setError(`${tr('file.uploadFailed')}: ${e}`);
     }
-  }, [sessionId, currentPath, loadDirectory]);
+  }, [sftpSessionId, currentPath, loadDirectory]);
 
   const handleNewFolder = useCallback(async () => {
-    if (!sessionId) return;
+    if (!sftpSessionId) return;
     const name = prompt(tr('file.enterFolderName'));
     if (!name) return;
     try {
       const remotePath = joinPath(currentPath, name);
-      await invoke('sftp_create_directory', { sessionId, path: remotePath });
+      await invoke('sftp_create_directory', { sftpSessionId, path: remotePath });
       loadDirectory(currentPath);
     } catch (e) {
       setError(`${tr('file.createFolderFailed')}: ${e}`);
     }
-  }, [sessionId, currentPath, loadDirectory]);
+  }, [sftpSessionId, currentPath, loadDirectory]);
+
+  const handleNewFile = useCallback(async () => {
+    if (!sftpSessionId) return;
+    const name = prompt(tr('file.enterFileName'));
+    if (!name) return;
+    try {
+      const remotePath = joinPath(currentPath, name);
+      await invoke('sftp_create_file', { sftpSessionId, path: remotePath });
+      loadDirectory(currentPath);
+    } catch (e) {
+      setError(`${tr('file.createFileFailed')}: ${e}`);
+    }
+  }, [sftpSessionId, currentPath, loadDirectory]);
 
   const handleDeleteEntry = useCallback(async (entry: FileEntry) => {
-    if (!sessionId) return;
+    if (!sftpSessionId) return;
     const msg = entry.is_dir
       ? tf(tr('file.deleteDirMsg'), { name: entry.name })
       : tf(tr('file.deleteFileMsg'), { name: entry.name });
     if (!confirm(msg)) return;
     try {
-      await invoke('sftp_delete_file', { sessionId, path: entry.path });
+      await invoke('sftp_delete_file', { sftpSessionId, path: entry.path });
       loadDirectory(currentPath);
     } catch (e) {
       setError(`${tr('file.deleteFailed')}: ${e}`);
     }
-  }, [sessionId, currentPath, loadDirectory]);
+  }, [sftpSessionId, currentPath, loadDirectory]);
 
   const handleRenameEntry = useCallback(async (entry: FileEntry) => {
-    if (!sessionId) return;
+    if (!sftpSessionId) return;
     const newName = prompt(tr('file.enterNewName'), entry.name);
     if (!newName || newName === entry.name) return;
     const parentPath = currentPath === '/' ? '/' : currentPath;
     const newPath = joinPath(parentPath, newName);
     try {
       await invoke('sftp_rename_file', {
-        sessionId,
+        sftpSessionId,
         oldPath: entry.path,
         newPath,
       });
@@ -352,22 +461,22 @@ function FileBrowser({ connectionId, sessionId: initialSessionId }: FileBrowserP
     } catch (e) {
       setError(`${tr('file.renameFailed')}: ${e}`);
     }
-  }, [sessionId, currentPath, loadDirectory]);
+  }, [sftpSessionId, currentPath, loadDirectory]);
 
   const handleDownloadEntry = useCallback(async (entry: FileEntry) => {
-    if (!sessionId || entry.is_dir) return;
+    if (!sftpSessionId || entry.is_dir) return;
     try {
       const savePath = await save({ defaultPath: entry.name });
       if (!savePath) return;
       await invoke('sftp_download_file', {
-        sessionId,
+        sftpSessionId,
         remotePath: entry.path,
         localPath: savePath,
       });
     } catch (e) {
       setError(`${tr('file.downloadFailed')}: ${e}`);
     }
-  }, [sessionId]);
+  }, [sftpSessionId]);
 
   const handleToggleSelect = useCallback((entry: FileEntry, e: React.MouseEvent) => {
     if (e.ctrlKey || e.metaKey) {
@@ -413,14 +522,31 @@ function FileBrowser({ connectionId, sessionId: initialSessionId }: FileBrowserP
   }
 
   // No session
-  if (!sessionId) {
+  if (!sftpSessionId) {
     return (
       <div className="file-browser">
         <div className="file-browser-loading">
           <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--text-secondary)" strokeWidth="1.5">
             <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
           </svg>
-          <p>{tr('file.pleaseConnect')}</p>
+          {error ? (
+            <>
+              <p style={{ color: 'var(--danger, #e53935)', fontSize: '13px' }}>{error}</p>
+              <button
+                className="fb-retry-btn"
+                onClick={() => { connectSftp(privileged); }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <polyline points="23 4 23 10 17 10" />
+                  <polyline points="1 20 1 14 7 14" />
+                  <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+                </svg>
+                {tr('file.refresh')}
+              </button>
+            </>
+          ) : (
+            <p>{tr('file.pleaseConnect')}</p>
+          )}
         </div>
       </div>
     );
@@ -450,12 +576,8 @@ function FileBrowser({ connectionId, sessionId: initialSessionId }: FileBrowserP
         <button
           className="fb-toolbar-btn"
           onClick={() => {
-            if (contextMenu.entry) {
-              handleDeleteEntry(contextMenu.entry);
-            } else if (selectedEntries.size > 0) {
-              const first = entries.find((e) => e.path === Array.from(selectedEntries)[0]);
-              if (first) handleDeleteEntry(first);
-            }
+            const first = entries.find((e) => selectedEntries.has(e.path));
+            if (first) handleDeleteEntry(first);
           }}
           title={tr('file.delete')}
           disabled={selectedEntries.size === 0}
@@ -510,13 +632,25 @@ function FileBrowser({ connectionId, sessionId: initialSessionId }: FileBrowserP
           </svg>
           <span>{tr('file.refresh')}</span>
         </button>
+        <div className="fb-toolbar-spacer" />
+        <button
+          className={`fb-toolbar-btn fb-privileged-btn ${privileged ? 'fb-privileged-active' : ''}`}
+          onClick={handleTogglePrivileged}
+          title={privileged ? tr('file.privilegedOn') : tr('file.privileged')}
+          disabled={connecting}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+          </svg>
+          <span>{privileged ? tr('file.privilegedOn') : tr('file.privileged')}</span>
+        </button>
       </div>
 
       {/* Breadcrumb */}
       <div className="file-browser-breadcrumb">
         {breadcrumbPaths.map((bp, i) => (
           <span key={bp.path}>
-            {i > 0 && <span className="breadcrumb-sep">/</span>}
+            {i > 1 && <span className="breadcrumb-sep">/</span>}
             <span
               className={`breadcrumb-item ${i === breadcrumbPaths.length - 1 ? 'breadcrumb-current' : ''}`}
               onClick={() => handleBreadcrumbClick(bp.path)}
@@ -642,6 +776,25 @@ function FileBrowser({ connectionId, sessionId: initialSessionId }: FileBrowserP
           {contextMenu.entry ? (
             <>
               {!contextMenu.entry.is_dir && (
+                <>
+                  <div
+                    className="context-menu-item"
+                    onClick={() => {
+                      const conn = connections.find((c) => c.id === connectionId);
+                      openEditor(connectionId, conn?.name || '', contextMenu.entry!.path, contextMenu.entry!.name);
+                      setContextMenu((prev) => ({ ...prev, visible: false }));
+                    }}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+                    </svg>
+                    {tr('file.edit')}
+                  </div>
+                  <div className="context-menu-divider" />
+                </>
+              )}
+              {!contextMenu.entry.is_dir && (
                 <div
                   className="context-menu-item"
                   onClick={() => {
@@ -702,6 +855,15 @@ function FileBrowser({ connectionId, sessionId: initialSessionId }: FileBrowserP
                   <line x1="9" y1="14" x2="15" y2="14" />
                 </svg>
                 {tr('file.newFolder')}
+              </div>
+              <div className="context-menu-item" onClick={handleNewFile}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                  <polyline points="14 2 14 8 20 8" />
+                  <line x1="12" y1="12" x2="12" y2="18" />
+                  <line x1="9" y1="15" x2="15" y2="15" />
+                </svg>
+                {tr('file.newFile')}
               </div>
               <div className="context-menu-divider" />
               <div className="context-menu-item" onClick={handleRefresh}>
@@ -807,6 +969,45 @@ function updateTreeNode(nodes: TreeNode[], path: string, updated: TreeNode): Tre
     if (n.path === path) return updated;
     if (n.children) {
       return { ...n, children: updateTreeNode(n.children, path, updated) };
+    }
+    return n;
+  });
+}
+
+// All ancestor directory paths of `path`, from root down to `path` itself.
+// e.g. '/home/cnooc/Desktop' -> ['/', '/home', '/home/cnooc', '/home/cnooc/Desktop']
+function getAncestors(path: string): string[] {
+  const parts = path.split('/').filter(Boolean);
+  const result = ['/'];
+  let acc = '';
+  for (const p of parts) {
+    acc += `/${p}`;
+    result.push(acc);
+  }
+  return result;
+}
+
+function findNode(nodes: TreeNode[], path: string): TreeNode | null {
+  for (const n of nodes) {
+    if (n.path === path) return n;
+    if (n.children) {
+      const found = findNode(n.children, path);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+// Fill `children` into the node at `path`, but only if it has not been loaded
+// yet, so manually-expanded deeper state is preserved.
+function insertChildren(nodes: TreeNode[], path: string, children: TreeNode[]): TreeNode[] {
+  return nodes.map((n) => {
+    if (n.path === path) {
+      if (n.loaded) return n;
+      return { ...n, children, loaded: true, loading: false };
+    }
+    if (n.children) {
+      return { ...n, children: insertChildren(n.children, path, children) };
     }
     return n;
   });
